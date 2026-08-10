@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux local image bundle manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "created_at",
+    "image",
+    "archive"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "local-image-bundle-manifest.schema.json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "id",
+        "source_revision",
+        "labels"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9._-]+(?::[0-9]+)?/)*[A-Za-z0-9._-]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$",
+          "not": {
+            "pattern": ":latest$"
+          }
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "source_revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "labels": {
+          "type": "object",
+          "required": [
+            "org.noi.desktop.contract",
+            "org.noi.iso.sha256",
+            "org.opencontainers.image.revision"
+          ],
+          "properties": {
+            "org.noi.desktop.contract": {
+              "const": "finalizer-status-v1"
+            },
+            "org.noi.iso.sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "org.opencontainers.image.revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            }
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "compression": {
+              "const": "none"
+            },
+            "file": {
+              "pattern": "\\.tar$"
+            }
+          }
+        },
+        {
+          "properties": {
+            "compression": {
+              "const": "zstd"
+            },
+            "file": {
+              "pattern": "\\.tar\\.zst$"
+            }
+          }
+        }
+      ],
+      "required": [
+        "file",
+        "format",
+        "compression",
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+\\.tar(?:\\.zst)?$"
+        },
+        "format": {
+          "const": "docker-archive"
+        },
+        "compression": {
+          "enum": [
+            "none",
+            "zstd"
+          ]
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

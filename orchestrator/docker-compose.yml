@@ -1,0 +1,25 @@
+services:
+  orchestrator:
+    build: .
+    container_name: noi-orchestrator
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      ORCHESTRATOR_CONFIG: /app/config.yaml
+      # config.yaml 只写 api_key_env；密钥只能由宿主机 .env 注入。
+      NOI_ARTIFACT_AI_API_KEY: ${NOI_ARTIFACT_AI_API_KEY:-}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - ./runtime:/app/runtime
+      - ${FRONTEND_CADDY_DIR:?set FRONTEND_CADDY_DIR in .env}:/app/caddy:ro
+      - ${CONTEST_SSH_KEY:?set CONTEST_SSH_KEY in .env}:/app/keys/contest.pem:ro
+      - ${CONTEST_KNOWN_HOSTS:?set CONTEST_KNOWN_HOSTS in .env}:/app/keys/known_hosts:ro
+      # validator/oracle 是教师审核过的本地程序，编排容器不得修改。
+      - ${ARTIFACT_TOOLS_DIR:-../artifact-tools}:/opt/noi-artifact-tools:ro
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NOI Contest Desktop Finalizer
+Comment=Normalize input sources and trust contest launchers after GNOME startup
+Exec=/usr/local/bin/finalize-contest-session.sh
+OnlyShowIn=GNOME;Unity;
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

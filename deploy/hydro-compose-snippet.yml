@@ -1,0 +1,22 @@
+# 合并到现有 Hydro compose 的 hydrooj 服务；不要直接单独启动本文件。
+# 先在宿主机创建：
+#   install -d -m 0700 ./orchestrator-state
+#   install -m 0600 /root/.hydro/orchestrator-token ./orchestrator-token
+# allowlist 只接受精确 DNS 主机名，多个主机以逗号分隔，不写 scheme/path。
+services:
+  hydrooj:
+    environment:
+      ORCHESTRATOR_TOKEN_FILE: /run/secrets/noi-orchestrator-token
+      ORCHESTRATOR_DOMAIN: system
+      ORCHESTRATOR_MAX_CODE_BYTES: "524288"
+      ORCHESTRATOR_IDEMPOTENCY_FILE: /root/.hydro/orchestrator-state/submissions.json
+      ORCHESTRATOR_IDEMPOTENCY_MAX_ENTRIES: "20000"
+      ORCHESTRATOR_NOTIFICATION_IDEMPOTENCY_FILE: /root/.hydro/orchestrator-state/notifications.json
+      ORCHESTRATOR_NOTIFICATION_IDEMPOTENCY_MAX_ENTRIES: "20000"
+      ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE: /root/.hydro/orchestrator-state/problem-drafts.json
+      ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_MAX_ENTRIES: "2000"
+      ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS: ${ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS:?set exact student HTTPS host allowlist}
+    volumes:
+      - ./addon:/root/.hydro/addon
+      - ./orchestrator-state:/root/.hydro/orchestrator-state
+      - ${HYDRO_ORCHESTRATOR_TOKEN_FILE:?set host token file}:/run/secrets/noi-orchestrator-token:ro

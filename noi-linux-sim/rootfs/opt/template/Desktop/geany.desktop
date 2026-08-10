@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Geany
+Comment=C/C++ IDE
+Exec=geany
+Icon=geany
+

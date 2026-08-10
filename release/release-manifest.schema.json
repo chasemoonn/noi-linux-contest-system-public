@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hydro NOI Contest Kit release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "release",
+    "profile",
+    "components",
+    "verification"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "release-manifest.schema.json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "git_revision", "created_at"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "git_revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "profile": {
+      "const": "aliyun-hydro5-pm2-direct-v1"
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orchestrator", "hydro_plugin", "desktop"],
+      "properties": {
+        "orchestrator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["image", "digest", "config_schema_version"],
+          "properties": {
+            "image": {"type": "string", "minLength": 1},
+            "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+            "config_schema_version": {"type": "integer", "minimum": 1}
+          }
+        },
+        "hydro_plugin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256", "hydro_version"],
+          "properties": {
+            "path": {"const": "hydro-plugin-orchestrator/index.js"},
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "hydro_version": {"const": ">=5.0.1 <5.1.0"}
+          }
+        },
+        "desktop": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "delivery",
+            "bundle_manifest_sha256",
+            "bundle_checksums_sha256",
+            "source_revision",
+            "image_tag",
+            "image_id",
+            "contract",
+            "iso_sha256"
+          ],
+          "properties": {
+            "delivery": {"const": "offline"},
+            "bundle_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "bundle_checksums_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+            "image_tag": {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9._-]+(?::[0-9]+)?/)*[A-Za-z0-9._-]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$",
+              "not": {"pattern": ":latest$"}
+            },
+            "image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+            "contract": {"const": "finalizer-status-v1"},
+            "iso_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ci", "single_seat", "capacity_15_plus_2"],
+      "properties": {
+        "ci": {"$ref": "#/$defs/evidence"},
+        "single_seat": {"$ref": "#/$defs/evidence"},
+        "capacity_15_plus_2": {"$ref": "#/$defs/evidence"}
+      }
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "date", "reference"],
+      "properties": {
+        "status": {"enum": ["passed", "pending", "failed"]},
+        "date": {"type": ["string", "null"], "format": "date"},
+        "reference": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

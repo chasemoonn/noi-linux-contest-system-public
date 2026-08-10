@@ -1,0 +1,31 @@
+{
+  "tid": "1234567890abcdef12345678",
+  "title": "CSP-J 2026 自动备赛测试",
+  "subtitle": "NOI Linux 全真模拟",
+  "begin_at_ms": 1786118400000,
+  "end_at_ms": 1786136400000,
+  "problems": [
+    {
+      "pid": "P1001",
+      "slug": "apple",
+      "title": "苹果求和",
+      "statement_markdown": "原始题面快照",
+      "input_filename": "apple.in",
+      "output_filename": "apple.out",
+      "time_limit_ms": 1000,
+      "memory_limit_mb": 256,
+      "source": {"docId": 1001, "rule": "default"}
+    },
+    {
+      "pid": "P1002",
+      "slug": "banana",
+      "title": "香蕉倍增",
+      "statement_markdown": "原始题面快照",
+      "input_filename": "banana.in",
+      "output_filename": "banana.out",
+      "time_limit_ms": 2000,
+      "memory_limit_mb": 512,
+      "source": {"docId": 1002, "rule": "default"}
+    }
+  ]
+}

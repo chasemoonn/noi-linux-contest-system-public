@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=终端 Terminal
+Exec=xfce4-terminal
+Icon=utilities-terminal
+

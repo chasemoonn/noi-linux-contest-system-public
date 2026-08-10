@@ -1,0 +1,63 @@
+name: Bug 报告
+description: 报告可复现的问题；不要提交秘密、学生数据或现场入口
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请只提供脱敏信息。不要粘贴 `.env`、AccessKey、Token、Cookie、SSH 私钥、真实域名/IP、桌面链接、学生账号、源码、隐藏数据、数据库或收卷包。安全问题请按 SECURITY.md 私下报告。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: Git commit、Release 版本或镜像 digest；不要填写现场地址
+      placeholder: 0.1.0-alpha.1 / 40 位 commit / sha256:...
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: 组件
+      options:
+        - noictl / 安装诊断
+        - orchestrator / 教师控制面
+        - Hydro 插件
+        - NOI Linux 桌面镜像
+        - 云资源与入口生命周期
+        - 文档或演示
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 最小复现步骤
+      description: 请使用测试环境和合成数据，说明每一步是否只读、是否改变云资源
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为与脱敏错误码
+      description: 优先粘贴稳定错误码或 noictl 脱敏 JSON；不要粘贴原始日志
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 安全确认
+      options:
+        - label: 我已删除秘密、真实入口、学生身份/源码、隐藏数据和现场拓扑
+          required: true
+        - label: 我没有在活动比赛或他人系统中首次复现此问题
+          required: true
+        - label: 若问题涉及安全漏洞，我会停止公开提交并改用 SECURITY.md 的私下渠道
+          required: true

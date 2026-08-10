@@ -1,0 +1,77 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecs:StartInstance",
+        "ecs:StopInstance"
+      ],
+      "Resource": "acs:ecs:cn-hangzhou:*:instance/i-xxxxxxxx"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecs:DescribeInstances",
+        "ecs:DescribeSecurityGroupAttribute",
+        "ecs:DescribeSecurityGroups",
+        "ecs:DescribeNetworkInterfaces"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ecs:AuthorizeSecurityGroup",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Deny",
+      "Action": "ecs:AuthorizeSecurityGroup",
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringNotLike": {
+          "ecs:SecurityGroupIpProtocols": [
+            "TCP"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Deny",
+      "Action": "ecs:AuthorizeSecurityGroup",
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringNotLike": {
+          "ecs:SecurityGroupSourceCidrIps": [
+            "0.0.0.0/0"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Deny",
+      "Action": "ecs:AuthorizeSecurityGroup",
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "ecs:SecurityGroupIpProtocols": "true"
+        }
+      }
+    },
+    {
+      "Effect": "Deny",
+      "Action": "ecs:AuthorizeSecurityGroup",
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "ecs:SecurityGroupSourceCidrIps": "true"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ecs:RevokeSecurityGroup",
+      "Resource": "acs:ecs:cn-hangzhou:*:securitygroup/sg-xxxxxxxx"
+    }
+  ]
+}

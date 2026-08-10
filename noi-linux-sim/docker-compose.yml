@@ -1,0 +1,22 @@
+services:
+  noi-desktop:
+    build:
+      context: .
+      args:
+        APT_MIRROR: ${APT_MIRROR:-mirrors.cloud.aliyuncs.com}
+    container_name: noi-desktop-test
+    ports:
+      - "6080:6080"
+    environment:
+      STUDENT_PASSWORD: ${STUDENT_PASSWORD:-test1234}
+      VNC_PASSWORD: ${VNC_PASSWORD:-test1234}
+      RESOLUTION: ${RESOLUTION:-1600x900}
+    volumes:
+      - ./runtime/submit:/home/student/submit
+      - ./runtime/papers:/home/student/题目
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 512
+    shm_size: 1g
+    restart: unless-stopped
+

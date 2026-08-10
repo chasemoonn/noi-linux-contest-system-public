@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="demo-data" content="synthetic-only">
+  <title>收卷完成报告 · Hydro NOI Contest Kit 演示</title>
+  <link rel="stylesheet" href="demo.css">
+</head>
+<body data-demo="synthetic">
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="index.html"><span class="brand-mark">NOI</span><span><strong>Hydro NOI Contest Kit</strong><small>开源演示资产</small></span></a>
+      <span class="demo-flag">离线静态演示 · example.test</span>
+    </div>
+    <nav class="demo-nav" aria-label="演示状态"><div class="demo-nav-inner"><a href="index.html">演示首页</a><a href="teacher-status.html">教师状态</a><a href="student-login.html">学生登录</a><a href="collection-report.html" aria-current="page">收卷报告</a></div></nav>
+  </header>
+  <main class="page">
+    <section class="hero">
+      <div><p class="eyebrow">Collection audit report</p><h1>收卷完成报告</h1><p class="lead">报告把截止冻结、最终版本选择、Hydro 回传、入口撤销和普通 OJ 隔离放在同一条可核对的审计链上。</p></div>
+      <div class="synthetic-note">仅含合成数据 · 不连接 OJ、云平台或比赛服务器</div>
+    </section>
+
+    <section class="report-banner"><div><strong>收卷完成，入口已撤销</strong><p>冻结快照、目录回收、网页版本选择和 Hydro 回传均已完成。</p></div><div class="report-number">2 / 2 成功</div></section>
+    <section class="grid grid-3" style="margin-top:18px" aria-label="收卷摘要">
+      <article class="card metric"><div class="card-body"><div class="metric-label">合成选手</div><div class="metric-value">DEMO-007</div><p class="metric-detail">座位 <span class="mono">SEAT-DEMO-007</span><br>未展示姓名或源码</p></div></article>
+      <article class="card metric"><div class="card-body"><div class="metric-label">冻结时间</div><div class="metric-value">17:00:00</div><span class="pill pill-safe">本地定时器</span><p class="metric-detail">2026-08-09 · UTC+08:00</p></div></article>
+      <article class="card metric"><div class="card-body"><div class="metric-label">比赛服务器</div><div class="metric-value">已停止</div><span class="pill pill-ok">入口 503</span><p class="metric-detail">文档地址 <span class="mono">192.0.2.44</span></p></div></article>
+    </section>
+    <section class="card" style="margin-top:18px"><div class="card-head"><h2>最终版本与 Hydro 回传</h2><span class="pill pill-ok">report complete</span></div><div class="table-wrap"><table><thead><tr><th>题目</th><th>最终来源</th><th>选择规则</th><th>合成 RID</th><th>结果</th></tr></thead><tbody>
+      <tr><td><strong>alpha.cpp</strong></td><td><span class="source-web">网页递交</span></td><td>使用最后一次明确递交</td><td class="mono">RID-DEMO-ALPHA-001</td><td><span class="pill pill-ok">已回传</span></td></tr>
+      <tr><td><strong>beta.cpp</strong></td><td><span class="source-folder">目录回退</span></td><td>无网页版本，使用冻结目录</td><td class="mono">RID-DEMO-BETA-001</td><td><span class="pill pill-ok">已回传</span></td></tr>
+    </tbody></table></div></section>
+    <section class="grid grid-2" style="margin-top:18px">
+      <article class="card"><div class="card-head"><h2>截止审计</h2><span class="mono">DEMO-COLLECT-001</span></div><div class="card-body"><ol class="audit">
+        <li><time>17:00:00</time><strong>全部座位冻结</strong><div class="metric-detail">答案目录进入只读收卷快照。</div></li>
+        <li><time>17:00:01</time><strong>学生入口关闭</strong><div class="metric-detail">新连接和既有桌面连接均不再可用。</div></li>
+        <li><time>17:00:03</time><strong>最终版本选择完成</strong><div class="metric-detail">逐题记录网页或目录来源及选择原因。</div></li>
+        <li><time>17:00:06</time><strong>Hydro 回传确认</strong><div class="metric-detail">两条合成 RID 均取得幂等收据。</div></li>
+      </ol></div></article>
+      <article class="card"><div class="card-head"><h2>隔离边界</h2><span class="pill pill-ok">已恢复</span></div><div class="card-body"><ul class="status-list">
+        <li><span class="status-icon">✓</span><span><strong>普通 OJ 未受影响</strong><small><span class="mono">oj.example.test</span> 持续健康</small></span></li>
+        <li><span class="status-icon">✓</span><span><strong>公网桌面规则已撤销</strong><small>比赛入口保持 HTTP 503</small></span></li>
+        <li><span class="status-icon">✓</span><span><strong>比赛服务器已停止</strong><small>收卷确认后进入节省停机状态</small></span></li>
+      </ul></div></article>
+    </section>
+
+  </main>
+  <footer class="site-footer">固定演示数据：<span class="mono">example.test</span> 与 RFC 5737 文档地址 · 由 <span class="mono">scripts/build_demo.py</span> 确定性生成</footer>
+</body>
+</html>

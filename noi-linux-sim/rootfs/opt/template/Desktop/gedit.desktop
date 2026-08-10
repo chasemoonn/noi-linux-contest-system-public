@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=gedit 文本编辑器
+Exec=gedit
+Icon=accessories-text-editor
+

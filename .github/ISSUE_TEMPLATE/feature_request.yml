@@ -1,0 +1,35 @@
+name: 功能建议
+description: 提议不破坏七条比赛契约的新能力
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 教师或学生遇到的问题
+      description: 先描述问题，不要只给实现方案
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: 对比赛契约和普通 OJ 的影响
+      description: 说明一人一容器、OI 盲测、截止冻结、失败关闭、回滚和容量证据
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 范围确认
+      options:
+        - label: 我没有附带秘密、学生数据、真实入口或现场配置
+          required: true
+        - label: 我接受新云厂商或新容量档必须通过完整验收后才能标记为支持
+          required: true

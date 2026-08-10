@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=题目（PDF）
+Exec=exo-open --launch FileManager /home/student/题目
+Icon=folder-documents
+

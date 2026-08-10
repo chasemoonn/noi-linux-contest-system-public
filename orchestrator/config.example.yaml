@@ -1,0 +1,141 @@
+cloud:
+  provider: "${CLOUD_PROVIDER:-aliyun}"
+  tencent:
+    secret_id: "${TENCENT_SECRET_ID:-}"
+    secret_key: "${TENCENT_SECRET_KEY:-}"
+    region: "${TENCENT_REGION:-ap-beijing}"
+    instance_id: "${TENCENT_INSTANCE_ID:-ins-xxxxxxxx}"
+  aliyun:
+    access_key_id: "${ALIYUN_ACCESS_KEY_ID:-}"
+    access_key_secret: "${ALIYUN_ACCESS_KEY_SECRET:-}"
+    region_id: "${ALIYUN_REGION_ID:-cn-hangzhou}"
+    instance_id: "${ALIYUN_INSTANCE_ID:-i-xxxxxxxx}"
+    # 必须是目标 ECS 主网卡专属的普通 basic 安全组。关闭态只允许
+    # 下面唯一 OJ /32 的精确 TCP 22/80；其他/重复入站规则会阻断开放。
+    # 学生规则的 owner 标识会自动包含该前缀和 instance_id。
+    desktop_access:
+      # 只有完成安全组 ID/RAM/EIP 校验后才改为 true，避免旧部署被自动切换。
+      enabled: false
+      security_group_id: "${ALIYUN_DESKTOP_SECURITY_GROUP_ID:-sg-xxxxxxxx}"
+      # 必填。只有明确接受公网明文直连风险时才填写 0.0.0.0/0；
+      # 已知学生出口时优先填写更窄的 CIDR。
+      source_cidr: "${STUDENT_DESKTOP_SOURCE_CIDR}"
+      management_source_cidrs:
+        # 必填。示例：203.0.113.10/32。禁止沿用其他站点的地址。
+        - "${CONTEST_SOURCE_CIDR:-}"
+      port: 80
+      priority: 20
+      description_prefix: "NOI-DESKTOP-DIRECT-MANAGED"
+      reconcile_seconds: 5
+
+contest_server:
+  ssh_user: "${CONTEST_SSH_USER:-root}"
+  ssh_key: "/app/keys/contest.pem"
+  known_hosts: "/app/keys/known_hosts"
+  strict_host_key: true
+  # StopCharging 重启可能更换公网 IP；固定实例主机密钥指纹可安全接受新 IP。
+  host_key_sha256: "${CONTEST_SSH_HOST_KEY_SHA256:-}"
+  seats_root: "/data/seats"
+  gateway_listen: 80
+  gateway_scheme: "http"
+  # 临时比赛用固定 EIP 裸 HTTP 直连；只允许省略端口或 :80。
+  # 留空则使用云 API 当前返回的 EIP。
+  gateway_public_base_url: "${GATEWAY_PUBLIC_BASE_URL:-}"
+  submit_proxy_port: 18082
+  docker_image: "noi-linux-official:2.0"
+  docker_network: "seats"
+  # <=15 人 / 16C64G 的流畅基线；仍需赛前按真实网络做 15 路压测。
+  memory: "2560m"
+  memory_swap: "2560m" # 与 memory 相同，避免 swap 抖动
+  cpus: "1.5"
+  pids_limit: 1024
+  shm_size: "1g"
+  resolution: "1366x768"
+  frame_rate: 30
+  no_vnc_quality: 9
+  no_vnc_compression: 2
+
+hydro:
+  public_base_url: "${HYDRO_PUBLIC_BASE_URL:-https://oj.example.com}"
+  internal_base_url: "${HYDRO_INTERNAL_BASE_URL:-http://127.0.0.1:8888}"
+  mongo_uri: "${HYDRO_MONGO_URI:-mongodb://127.0.0.1:27017/hydro}"
+  domain_id: "${HYDRO_DOMAIN_ID:-system}"
+  submit_enabled: true
+  notify_enabled: true
+  # 必须与 Hydro 插件 ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS 一致；仅精确域名。
+  # 裸 HTTP EIP 模式的站内消息先到该 HTTPS 控制面并立即 302；桌面和 WS 不经 OJ。
+  notify_allowed_https_hosts:
+    - "exam.example.com"
+  orchestrator_token: "${HYDRO_ORCHESTRATOR_TOKEN}"
+  submit_lang: "cc.cc14o2"
+
+orchestrator:
+  admin_username: "teacher"
+  admin_password: "${ADMIN_PASSWORD}"
+  db: "/app/data/orchestrator.db"
+  collected_dir: "/app/data/collected"
+  materials_dir: "/app/data/materials"
+  artifact_root: "/app/data/artifacts"
+  paper_max_bytes: 67108864
+  testdata_max_bytes: 67108864
+  testdata_expanded_max_bytes: 268435456
+  testdata_max_files: 1000
+  public_base_url: "${ORCHESTRATOR_PUBLIC_BASE_URL:-https://exam.example.com}"
+  web_submit_max_bytes: 102400
+  # 实时送评请求最长约 35 秒；租约应覆盖一次请求，worker 异常退出后到期可重试。
+  realtime_judge_lease_seconds: 45
+  # 没有待送记录时的持久化队列轮询间隔；一般无需为了“更实时”继续调低。
+  realtime_judge_idle_seconds: 0.5
+  # 赛前先按上限预热并逐座位验收；备用座只用于故障替换，不增加参赛上限。
+  seat_pool_maximum: 30 # 正式参赛人数硬上限
+  seat_pool_total_maximum: 40 # 正式座 + 备用座的容器总上限
+  default_max_participants: 15
+  default_spare_seats: 2
+  release_lead_minutes: 5
+  practice_groups_per_problem: 3
+  prepare_before_minutes: 15
+  prepare_late_grace_minutes: 30
+  auto_shutdown_after_collect: true
+  shutdown_on_prepare_error: true
+  shutdown_on_collect_error: true
+  # 与 OJ 主机镜像部署脚本共享；部署/验收期间后台会拒绝备赛。
+  deployment_lock: "/app/runtime/deploy-image.lock"
+  student_notice_url: ""
+
+# AI 只起草题面和自测输入；.out 必须由下面逐题配置的可信本地 oracle 生成。
+# 首次启用前，应把 validator/oracle 放入专用只读目录并逐题配置，缺一项即阻断。
+artifact_generation:
+  enabled: false
+  ai:
+    endpoint: "https://api.example.com/v1/chat/completions"
+    api_key_env: "NOI_ARTIFACT_AI_API_KEY"
+    model: "your-json-schema-capable-model"
+    timeout_seconds: 90
+    max_response_bytes: 4194304
+  tools:
+    approved_roots:
+      - "/opt/noi-artifact-tools"
+    defaults:
+      timeout_seconds: 3
+      max_input_bytes: 16777216
+      max_output_bytes: 16777216
+      cpu_seconds: 3
+      memory_limit_bytes: 536870912
+      open_files: 64
+      processes: 8
+    # validators:
+    #   books:
+    #     executable: "/opt/noi-artifact-tools/books-validator"
+    validators: {}
+    # oracles:
+    #   books:
+    #     executable: "/opt/noi-artifact-tools/books-oracle"
+    oracles: {}
+
+frontend_proxy:
+  provider: "${FRONTEND_PROXY_PROVIDER:-none}"
+  domain: "${FRONTEND_DOMAIN:-exam.example.com}"
+  snippet_path: "/app/runtime/caddy-exam.conf"
+  caddyfile_path: "/app/caddy/Caddyfile"
+  admin_url: "http://127.0.0.1:2019"
+  orchestrator_upstream: "http://127.0.0.1:8600"

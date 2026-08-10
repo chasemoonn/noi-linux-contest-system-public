@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="demo-data" content="synthetic-only">
+  <title>可重复的离线产品演示 · Hydro NOI Contest Kit 演示</title>
+  <link rel="stylesheet" href="demo.css">
+</head>
+<body data-demo="synthetic">
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="index.html"><span class="brand-mark">NOI</span><span><strong>Hydro NOI Contest Kit</strong><small>开源演示资产</small></span></a>
+      <span class="demo-flag">离线静态演示 · example.test</span>
+    </div>
+    <nav class="demo-nav" aria-label="演示状态"><div class="demo-nav-inner"><a href="index.html" aria-current="page">演示首页</a><a href="teacher-status.html">教师状态</a><a href="student-login.html">学生登录</a><a href="collection-report.html">收卷报告</a></div></nav>
+  </header>
+  <main class="page">
+    <section class="hero">
+      <div><p class="eyebrow">Synthetic demo gallery</p><h1>可重复的离线产品演示</h1><p class="lead">三张固定状态页覆盖老师办赛、学生进入回收系统和截止收卷。页面可直接用浏览器打开，也可以按截图规范在固定视口重复生成图片。</p></div>
+      <div class="synthetic-note">仅含合成数据 · 不连接 OJ、云平台或比赛服务器</div>
+    </section>
+
+    <section class="grid grid-3 demo-cards" aria-label="演示页面">
+      <a class="card card-body" href="teacher-status.html"><span class="demo-card-index">01 / TEACHER</span><div class="demo-card-title">教师状态总览</div><p class="demo-card-copy">展示比赛机、普通 OJ、材料、座位池与截止保护的可观察状态。</p><span class="demo-card-link">打开教师演示 →</span></a>
+      <a class="card card-body" href="student-login.html"><span class="demo-card-index">02 / STUDENT</span><div class="demo-card-title">学生登录入口</div><p class="demo-card-copy">复现程序回收系统的青蓝登录界面；字段为空且页面不可提交。</p><span class="demo-card-link">打开学生演示 →</span></a>
+      <a class="card card-body" href="collection-report.html"><span class="demo-card-index">03 / REPORT</span><div class="demo-card-title">收卷完成报告</div><p class="demo-card-copy">展示冻结、来源选择、合成 RID、回传和入口撤销的审计结果。</p><span class="demo-card-link">打开报告演示 →</span></a>
+    </section>
+    <section class="card" style="margin-top:18px"><div class="card-head"><h2>演示边界</h2><span class="pill pill-safe">公开安全</span></div><div class="card-body"><p>这些页面不是生产后台快照，也不会读取任何数据库、日志或部署配置。所有比赛、选手、座位和评测标识均以 <span class="mono">DEMO-</span> 开头；网络信息只使用保留域名和文档地址。</p></div></section>
+
+  </main>
+  <footer class="site-footer">固定演示数据：<span class="mono">example.test</span> 与 RFC 5737 文档地址 · 由 <span class="mono">scripts/build_demo.py</span> 确定性生成</footer>
+</body>
+</html>

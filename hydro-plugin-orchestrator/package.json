@@ -1,0 +1,16 @@
+{
+  "name": "hydrooj-orchestrator-submit",
+  "version": "1.6.2",
+  "private": true,
+  "description": "Judge collected submissions, send seat notifications, and clone approved contest-private file-I/O problems",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "hydrooj": ">=5.0.1 <5.1.0"
+  }
+}

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=答案文件夹（自动回收）
+Comment=按 准考证号/题目名/题目名.cpp 保存
+Exec=exo-open --launch FileManager /home/student/submit
+Icon=folder-important

@@ -1,0 +1,49 @@
+{
+  "$schema": "release-manifest.schema.json",
+  "schema_version": 1,
+  "release": {
+    "version": "0.1.0-alpha.1",
+    "git_revision": "0000000000000000000000000000000000000000",
+    "created_at": "2026-08-09T00:00:00Z"
+  },
+  "profile": "aliyun-hydro5-pm2-direct-v1",
+  "components": {
+    "orchestrator": {
+      "image": "registry.example.com/community/hydro-noi-orchestrator:0.1.0-alpha.1",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "config_schema_version": 1
+    },
+    "hydro_plugin": {
+      "path": "hydro-plugin-orchestrator/index.js",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "hydro_version": ">=5.0.1 <5.1.0"
+    },
+    "desktop": {
+      "delivery": "offline",
+      "bundle_manifest_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "bundle_checksums_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "source_revision": "0000000000000000000000000000000000000000",
+      "image_tag": "noi-linux-official:2.0",
+      "image_id": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "contract": "finalizer-status-v1",
+      "iso_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+    }
+  },
+  "verification": {
+    "ci": {
+      "status": "passed",
+      "date": "2026-08-09",
+      "reference": "https://github.com/example/hydro-noi/actions/runs/1"
+    },
+    "single_seat": {
+      "status": "passed",
+      "date": "2026-08-09",
+      "reference": "docs/evidence/single-seat-0.1.0-alpha.1.md"
+    },
+    "capacity_15_plus_2": {
+      "status": "pending",
+      "date": null,
+      "reference": null
+    }
+  }
+}

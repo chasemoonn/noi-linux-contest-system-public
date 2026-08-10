@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="demo-data" content="synthetic-only">
+  <title>教师状态总览 · Hydro NOI Contest Kit 演示</title>
+  <link rel="stylesheet" href="demo.css">
+</head>
+<body data-demo="synthetic">
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="index.html"><span class="brand-mark">NOI</span><span><strong>Hydro NOI Contest Kit</strong><small>开源演示资产</small></span></a>
+      <span class="demo-flag">离线静态演示 · example.test</span>
+    </div>
+    <nav class="demo-nav" aria-label="演示状态"><div class="demo-nav-inner"><a href="index.html">演示首页</a><a href="teacher-status.html" aria-current="page">教师状态</a><a href="student-login.html">学生登录</a><a href="collection-report.html">收卷报告</a></div></nav>
+  </header>
+  <main class="page">
+    <section class="hero">
+      <div><p class="eyebrow">Teacher control plane</p><h1>教师状态总览</h1><p class="lead">老师在一页内判断普通 OJ 是否独立可用、比赛机是否处于预期状态，以及材料、座位和截止保护是否具备开赛条件。</p></div>
+      <div class="synthetic-note">仅含合成数据 · 不连接 OJ、云平台或比赛服务器</div>
+    </section>
+
+    <section class="grid grid-3" aria-label="核心状态">
+      <article class="card metric"><div class="card-body"><div class="metric-label">普通 Hydro OJ</div><div class="metric-value">正常</div><span class="pill pill-ok">独立可用</span><p class="metric-detail"><span class="mono">https://oj.example.test</span><br>健康检查 18 / 18</p></div></article>
+      <article class="card metric"><div class="card-body"><div class="metric-label">比赛服务器</div><div class="metric-value">已停止</div><span class="pill pill-safe">StopCharging</span><p class="metric-detail">文档地址 <span class="mono">203.0.113.24</span><br>学生入口返回 503</p></div></article>
+      <article class="card metric"><div class="card-body"><div class="metric-label">座位池验收</div><div class="metric-value">17 / 17</div><div class="progress progress-full"><span></span></div><p class="metric-detail">正式座位 15 · 备用座位 2</p></div></article>
+    </section>
+    <section class="grid grid-2" style="margin-top:18px">
+      <article class="card"><div class="card-head"><h2>比赛状态</h2><span class="pill pill-ok">准备完成</span></div><div class="card-body"><ul class="status-list">
+        <li><span class="status-icon">✓</span><span><strong>比赛快照已冻结</strong><small>OI 赛制 · 双轨交卷 · 截止 17:00</small></span><span class="mono">DEMO-CONTEST-001</span></li>
+        <li><span class="status-icon">✓</span><span><strong>材料已批准</strong><small>试题 PDF、自测包和文件读写映射一致</small></span><span class="pill pill-ok">approved</span></li>
+        <li><span class="status-icon">✓</span><span><strong>桌面逐座验收</strong><small>画面、答案目录、试题和自测数据均就绪</small></span><span class="pill pill-ok">verified</span></li>
+        <li><span class="status-icon">✓</span><span><strong>截止保护已安装</strong><small>比赛机本地定时器先冻结，再关闭入口</small></span><span class="pill pill-safe">armed</span></li>
+      </ul></div></article>
+      <article class="card"><div class="card-head"><h2>办赛检查点</h2><span class="mono">exam.example.test</span></div><div class="card-body"><ol class="audit">
+        <li><time>08:30:00</time><strong>Doctor 只读检查通过</strong><div class="metric-detail">Hydro、Docker、Caddy 和云权限均满足首个支持 profile。</div></li>
+        <li><time>08:42:15</time><strong>座位池完成预热</strong><div class="metric-detail">17 个桌面全部通过独立验收，没有临近开赛集中创建。</div></li>
+        <li><time>08:45:00</time><strong>名单绑定完成</strong><div class="metric-detail">15 个合成选手绑定主座位，备用位保持未发放。</div></li>
+        <li><time>08:55:00</time><strong>入口等待发放</strong><div class="metric-detail">教师仍需显式确认；演示页面不执行任何真实操作。</div></li>
+      </ol></div></article>
+    </section>
+
+  </main>
+  <footer class="site-footer">固定演示数据：<span class="mono">example.test</span> 与 RFC 5737 文档地址 · 由 <span class="mono">scripts/build_demo.py</span> 确定性生成</footer>
+</body>
+</html>

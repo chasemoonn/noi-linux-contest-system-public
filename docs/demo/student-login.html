@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="demo-data" content="synthetic-only">
+  <title>学生登录入口 · Hydro NOI Contest Kit 演示</title>
+  <link rel="stylesheet" href="demo.css">
+</head>
+<body data-demo="synthetic">
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="index.html"><span class="brand-mark">NOI</span><span><strong>Hydro NOI Contest Kit</strong><small>开源演示资产</small></span></a>
+      <span class="demo-flag">离线静态演示 · example.test</span>
+    </div>
+    <nav class="demo-nav" aria-label="演示状态"><div class="demo-nav-inner"><a href="index.html">演示首页</a><a href="teacher-status.html">教师状态</a><a href="student-login.html" aria-current="page">学生登录</a><a href="collection-report.html">收卷报告</a></div></nav>
+  </header>
+  <main class="page">
+    <section class="hero">
+      <div><p class="eyebrow">Student submission portal</p><h1>学生登录入口</h1><p class="lead">这一状态复用现有程序回收页面的品牌色和布局，但输入框被禁用且没有预填账号、口令或链接凭据。</p></div>
+      <div class="synthetic-note">仅含合成数据 · 不连接 OJ、云平台或比赛服务器</div>
+    </section>
+
+    <section class="login-shell" aria-label="CSP 程序回收系统登录演示">
+      <div class="login-panel">
+        <h2>选手登录</h2>
+        <div class="login-context"><strong>合成测试赛 · DEMO-CONTEST-001</strong><span>状态：进行中（静态演示）</span></div>
+        <div role="form" aria-label="不可提交的登录表单">
+          <label class="field-label" for="candidate-demo">准考证号</label>
+          <input id="candidate-demo" name="candidate-demo" autocomplete="off" placeholder="示例字段保持为空" disabled>
+          <label class="field-label" for="credential-demo">登录口令</label>
+          <input id="credential-demo" name="credential-demo" type="password" autocomplete="off" placeholder="演示页面不保存口令" disabled>
+          <button type="button" disabled>登录（静态演示）</button>
+        </div>
+        <p class="help">入口示例：<span class="mono">https://exam.example.test</span><br>此页面没有认证服务，也不会发送表单数据。</p>
+      </div>
+      <div class="login-hero"><div class="login-hero-content"><p class="eyebrow" style="color:#d6f6ff">Student entry</p><h2>CSP 程序回收系统</h2><p>进入桌面前核对比赛名称与状态。真实系统会在错误账号、错误口令或入口结束时给出明确反馈。</p></div></div>
+    </section>
+
+  </main>
+  <footer class="site-footer">固定演示数据：<span class="mono">example.test</span> 与 RFC 5737 文档地址 · 由 <span class="mono">scripts/build_demo.py</span> 确定性生成</footer>
+</body>
+</html>
