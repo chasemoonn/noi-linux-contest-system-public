@@ -29,11 +29,32 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install --disable-pip-version-check -r orchestrator/requirements.txt
 
+      - name: Stage a root-owned qualification tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          qualification_root="$(sudo mktemp -d /root/noi-linux-ci.XXXXXX)"
+          echo "QUALIFICATION_ROOT=$qualification_root" >> "$GITHUB_ENV"
+          sudo cp -a "$GITHUB_WORKSPACE/." "$qualification_root/"
+          sudo chown -R root:root "$qualification_root"
+          sudo find "$qualification_root" -type d -exec chmod go-w {} +
+          sudo find "$qualification_root" -type f -exec chmod go-w {} +
+
       - name: Run complete Linux source qualification gate
-        run: sudo "$(command -v python)" scripts/run_v1_linux_ci.py --output v1-linux-ci-evidence.json --log-directory v1-linux-ci-logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_bin="$(command -v python)"
+          sudo bash -c '
+            cd "$1"
+            exec "$2" scripts/run_v1_linux_ci.py \
+              --output "$3/v1-linux-ci-evidence.json" \
+              --log-directory "$3/v1-linux-ci-logs"
+          ' qualification "$QUALIFICATION_ROOT" "$python_bin" "$GITHUB_WORKSPACE"
+          sudo chown -R "$(id -u):$(id -g)" v1-linux-ci-evidence.json v1-linux-ci-logs
 
       - name: Independently verify Linux CI evidence
-        run: sudo "$(command -v python)" scripts/verify_v1_linux_ci_evidence.py v1-linux-ci-evidence.json --log-directory v1-linux-ci-logs --expected-revision "$GITHUB_SHA"
+        run: python scripts/verify_v1_linux_ci_evidence.py v1-linux-ci-evidence.json --log-directory v1-linux-ci-logs --expected-revision "$GITHUB_SHA"
 
       - name: Upload Linux CI qualification evidence
         uses: actions/upload-artifact@v7

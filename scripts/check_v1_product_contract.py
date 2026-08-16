@@ -358,10 +358,15 @@ def main() -> int:
     ):
         require(marker in fault_gate, f"fault-injection scenario missing: {marker}", failures)
     require(
-        'sudo "$(command -v python)" scripts/run_v1_linux_ci.py --output v1-linux-ci-evidence.json --log-directory v1-linux-ci-logs' in workflow
+        "Stage a root-owned qualification tree" in workflow
+        and 'sudo cp -a "$GITHUB_WORKSPACE/." "$qualification_root/"' in workflow
+        and 'sudo chown -R root:root "$qualification_root"' in workflow
+        and 'exec "$2" scripts/run_v1_linux_ci.py' in workflow
+        and '--output "$3/v1-linux-ci-evidence.json"' in workflow
+        and '--log-directory "$3/v1-linux-ci-logs"' in workflow
         and "verify_v1_linux_ci_evidence.py v1-linux-ci-evidence.json" in workflow
         and "actions/upload-artifact@v7" in workflow,
-        "Linux CI must generate, verify, and upload qualification evidence",
+        "Linux CI must generate qualification evidence from a root-owned tree, verify it, and upload it",
         failures,
     )
     require(
