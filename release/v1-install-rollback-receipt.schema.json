@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 verified install rollback receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "status", "plan_id", "verified_at", "backup_manifest_sha256", "restored_artifacts", "ordinary_oj_unchanged", "pending_marker_cleared"],
+  "properties": {
+    "$schema": {"const": "v1-install-rollback-receipt.schema.json"},
+    "schema_version": {"const": 1},
+    "status": {"const": "rollback_verified"},
+    "plan_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "verified_at": {"type": "string", "format": "date-time"},
+    "backup_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "restored_artifacts": {"const": 21},
+    "ordinary_oj_unchanged": {"const": true},
+    "pending_marker_cleared": {"const": true}
+  }
+}

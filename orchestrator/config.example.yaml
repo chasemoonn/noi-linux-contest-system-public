@@ -37,6 +37,8 @@ contest_server:
   host_key_sha256: "${CONTEST_SSH_HOST_KEY_SHA256:-}"
   seats_root: "/data/seats"
   gateway_listen: 80
+  # 专用比赛机保持 0.0.0.0；仅多网卡隔离验收环境可固定到比赛网卡 IPv4。
+  gateway_bind_address: "${GATEWAY_BIND_ADDRESS:-0.0.0.0}"
   gateway_scheme: "http"
   # 临时比赛用固定 EIP 裸 HTTP 直连；只允许省略端口或 :80。
   # 留空则使用云 API 当前返回的 EIP。
@@ -76,8 +78,13 @@ orchestrator:
   collected_dir: "/app/data/collected"
   materials_dir: "/app/data/materials"
   artifact_root: "/app/data/artifacts"
+  # 非最终材料草稿保留 30 天；最终材料和收卷证据保留 180 天。
+  # OJ 中的比赛、代码、评测和成绩不由此清理。
+  workspace_retention_days: 30
+  evidence_retention_days: 180
   paper_max_bytes: 67108864
   testdata_max_bytes: 67108864
+  material_publish_max_bytes: 134217728
   testdata_expanded_max_bytes: 268435456
   testdata_max_files: 1000
   public_base_url: "${ORCHESTRATOR_PUBLIC_BASE_URL:-https://exam.example.com}"
@@ -95,9 +102,12 @@ orchestrator:
   practice_groups_per_problem: 3
   prepare_before_minutes: 15
   prepare_late_grace_minutes: 30
+  # 截止后只用于回传、核验和归档，不延长学生作答时间。
+  shutdown_grace_minutes: 30
   auto_shutdown_after_collect: true
   shutdown_on_prepare_error: true
-  shutdown_on_collect_error: true
+  # 回收失败时保留冻结现场，禁止自动关机造成证据丢失。
+  shutdown_on_collect_error: false
   # 与 OJ 主机镜像部署脚本共享；部署/验收期间后台会拒绝备赛。
   deployment_lock: "/app/runtime/deploy-image.lock"
   student_notice_url: ""

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 controller network fault agent configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "qualification_marker", "contest_id",
+    "seat_inventory_probe_sha256", "docker_socket", "controller",
+    "target_ipv4", "target_port", "controller_probe_target_sha256",
+    "nsenter_path", "iptables_path", "python_path", "signer", "signing_public_key",
+    "signing_key_path", "ssh_keygen_path", "lock_path", "recovery_state_path",
+    "receipt_path", "output_path"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "contest_id": {"type": "string", "pattern": "^[a-f0-9]{24}$"},
+    "seat_inventory_probe_sha256": {"$ref": "#/$defs/hex64"},
+    "docker_socket": {"const": "/var/run/docker.sock"},
+    "controller": {
+      "type": "object", "additionalProperties": false,
+      "required": ["container_id", "image_id", "pid", "started_at", "restart_count"],
+      "properties": {
+        "container_id": {"$ref": "#/$defs/hex64"},
+        "image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "pid": {"type": "integer", "minimum": 1},
+        "started_at": {"type": "string", "format": "date-time"},
+        "restart_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "target_ipv4": {"type": "string", "format": "ipv4"},
+    "target_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "controller_probe_target_sha256": {"$ref": "#/$defs/hex64"},
+    "nsenter_path": {"$ref": "#/$defs/path"},
+    "iptables_path": {"$ref": "#/$defs/path"},
+    "python_path": {"$ref": "#/$defs/path"},
+    "signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
+    "signing_public_key": {"type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]{40,160}( [^\\r\\n]{1,120})?$"},
+    "signing_key_path": {"$ref": "#/$defs/path"},
+    "ssh_keygen_path": {"$ref": "#/$defs/path"},
+    "lock_path": {"$ref": "#/$defs/path"},
+    "recovery_state_path": {"$ref": "#/$defs/path"},
+    "receipt_path": {"$ref": "#/$defs/path"},
+    "output_path": {"$ref": "#/$defs/path"}
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "path": {"type": "string", "pattern": "^/([^/]+/)*[^/]+$"}
+  }
+}

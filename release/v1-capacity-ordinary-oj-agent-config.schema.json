@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 ordinary OJ capacity observer configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "oj_origin", "public_paths", "prep_health_path", "pm2_bin", "pm2_baseline", "qualification_marker", "credential_canary", "result_canary", "signer", "signing_key_path", "ssh_keygen_path", "lock_path", "state_path", "output_path"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "oj_origin": {"type": "string", "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]+)?$"},
+    "public_paths": {"type": "array", "minItems": 2, "maxItems": 8, "uniqueItems": true, "contains": {"const": "/"}, "items": {"type": "string", "pattern": "^/[^?#]{0,255}$"}},
+    "prep_health_path": {"const": "/prep/health"},
+    "pm2_bin": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "pm2_baseline": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "pid", "restart_time", "status"],
+        "properties": {
+          "name": {"enum": ["caddy", "hydro-sandbox", "hydrooj", "mongodb"]},
+          "pid": {"type": "integer", "minimum": 1},
+          "restart_time": {"type": "integer", "minimum": 0},
+          "status": {"const": "online"}
+        }
+      }
+    },
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "credential_canary": {"type": "string", "pattern": "^NOI-V1-CREDENTIAL-[A-Z0-9]{32,96}$"},
+    "result_canary": {"type": "string", "pattern": "^NOI-V1-RESULT-[A-Z0-9]{32,96}$"},
+    "signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
+    "signing_key_path": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "ssh_keygen_path": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "lock_path": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "state_path": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "output_path": {"type": "string", "pattern": "^/[^\\u0000]+$"}
+  }
+}

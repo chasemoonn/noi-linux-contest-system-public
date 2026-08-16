@@ -16,6 +16,7 @@ import re
 import secrets
 import threading
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import (
@@ -43,6 +44,7 @@ from services.cloud import make_cvm
 from services.config import load_config
 from services.hydro import Hydro
 from services.hydro_notify import HydroNotifier
+from services.hydro_materials import HydroMaterialPublisher
 from services.materials import (
     MaterialError,
     approved_material_paths,
@@ -58,6 +60,7 @@ from services.hydro_submit import HydroSubmitter
 from services.pipeline import Pipeline, gateway_base_url, novnc_path
 from services.problem_mapping import ProblemMappingError, auto_problem_mapping
 from services.realtime_judge import RealtimeJudge
+from services.retention import RetentionManager
 from services.static_check import check_code, force_zero_code
 from services.store import Store, SubmissionClosedError, SubmissionConflictError
 
@@ -74,11 +77,27 @@ hydro = Hydro(
     cfg["hydro"]["domain_id"],
 )
 store = Store(cfg["orchestrator"]["db"])
+material_publisher = HydroMaterialPublisher(
+    cfg["hydro"]["internal_base_url"],
+    cfg["hydro"]["orchestrator_token"],
+    maximum_bytes=int(
+        cfg["orchestrator"].get(
+            "material_publish_max_bytes",
+            128 * 1024 * 1024,
+        )
+    ),
+)
 recovered_artifact_jobs = store.recover_interrupted_artifact_jobs()
 if recovered_artifact_jobs:
     log.warning(
         "marked %s material jobs interrupted after service restart",
         recovered_artifact_jobs,
+    )
+recovered_contests = store.recover_interrupted_contests()
+if recovered_contests:
+    log.warning(
+        "marked %s interrupted prepare operations fail-closed",
+        recovered_contests,
     )
 artifact_runner = None
 if (cfg.get("artifact_generation") or {}).get("enabled", False):
@@ -116,6 +135,12 @@ if cfg["hydro"].get("submit_enabled"):
             cfg["hydro"]["internal_base_url"],
             cfg["hydro"]["orchestrator_token"],
             cfg["hydro"].get("submit_lang", ""),
+            qualification_failure_marker_path=cfg["hydro"].get(
+                "qualification_failure_marker_path", ""
+            ),
+            qualification_marker=cfg["hydro"].get(
+                "qualification_marker", ""
+            ),
         ),
         lease_seconds=float(
             cfg["orchestrator"].get("realtime_judge_lease_seconds", 45)
@@ -134,6 +159,18 @@ if cfg["hydro"].get("notify_enabled", False):
         notify_hosts,
     )
 pipe = Pipeline(cfg, cvm, hydro, store, log, realtime_judge=realtime_judge)
+retention = RetentionManager(
+    store,
+    artifact_root=cfg["orchestrator"].get("artifact_root", "/app/data/artifacts"),
+    materials_dir=cfg["orchestrator"].get("materials_dir", "/app/data/materials"),
+    collected_dir=cfg["orchestrator"]["collected_dir"],
+    workspace_retention_days=int(
+        cfg["orchestrator"].get("workspace_retention_days", 30)
+    ),
+    evidence_retention_days=int(
+        cfg["orchestrator"].get("evidence_retention_days", 180)
+    ),
+)
 templates = Environment(autoescape=select_autoescape(default=True))
 security = HTTPBasic()
 ADMIN_CSRF = secrets.token_urlsafe(32)
@@ -206,6 +243,20 @@ def _spawn_pool_operation(target, tid: str, **kwargs) -> None:
             # Pipeline records a safe, user-facing status while retaining the
             # old pool; this log preserves the traceback for the operator.
             log.exception("background seat-pool operation failed for %s", tid)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _spawn_notification_retry(tid: str) -> None:
+    """Wake one notification batch; the scheduler drains the durable remainder."""
+
+    def run() -> None:
+        try:
+            contest = store.get_contest(tid)
+            if contest and str(contest.get("state") or "") == "ready":
+                _notify_released_seats(contest)
+        except Exception:
+            log.exception("background seat notification retry failed for %s", tid)
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -411,13 +462,41 @@ def _notify_released_seats(contest: dict) -> None:
 
 def tick() -> None:
     now = datetime.now(timezone.utc)
+    observed_at_ms = int(now.timestamp() * 1000)
     before = int(cfg["orchestrator"]["prepare_before_minutes"]) * 60
     late = int(cfg["orchestrator"].get("prepare_late_grace_minutes", 30)) * 60
     for contest in store.contests():
         tid = contest["tid"]
+        contest_state = str(contest.get("state") or "")
+        if contest_state == "collecting":
+            if not pipe.is_active(tid):
+                _spawn(pipe.collect, tid)
+            continue
+        if contest_state == "safe_wait":
+            if (
+                observed_at_ms >= int(contest.get("shutdown_after_ms") or 0)
+                and not pipe.is_active(tid)
+            ):
+                _spawn(pipe.finish_safe_wait, tid)
+            continue
+        if contest_state not in {"registered", "ready"}:
+            continue
+        time_source_read = False
         try:
             document = hydro.get_contest(tid)
-            if not document or not document.get("beginAt"):
+            time_source_read = True
+            if (
+                not document
+                or not document.get("beginAt")
+                or not document.get("endAt")
+                or not document.get("rule")
+            ):
+                if contest["state"] == "ready":
+                    store.mark_time_sync(
+                        tid,
+                        observed_at_ms=observed_at_ms,
+                        error="OJ 比赛时间暂时不可读",
+                    )
                 continue
             begin = _utc(document["beginAt"])
             end = _utc(document["endAt"]) if document.get("endAt") else None
@@ -430,21 +509,32 @@ def tick() -> None:
             elif contest["state"] == "ready" and end:
                 begin_ms = int(begin.timestamp() * 1000)
                 end_ms = int(end.timestamp() * 1000)
-                snapshot_drift = bool(
-                    int(contest.get("begin_at_ms") or 0)
-                    and (
-                        begin_ms != int(contest["begin_at_ms"])
-                        or end_ms != int(contest["end_at_ms"])
-                        or str(document.get("rule") or "")
-                        != str(contest.get("hydro_rule") or "")
-                    )
+                current_rule = str(document.get("rule") or "")
+                schedule_drift = bool(
+                    begin_ms != int(contest.get("begin_at_ms") or 0)
+                    or end_ms != int(contest.get("end_at_ms") or 0)
                 )
-                if snapshot_drift:
+                if current_rule != "oi":
                     if store.transition(
                         tid,
                         {"ready"},
                         "collecting",
-                        "检测到 Hydro 时间或赛制被修改，已触发保护性收卷",
+                        "OJ 赛制不再是 OI，已触发保护性收卷",
+                    ):
+                        _spawn(pipe.collect, tid)
+                elif schedule_drift:
+                    synced = pipe.sync_contest_schedule(
+                        tid,
+                        begin_at_ms=begin_ms,
+                        end_at_ms=end_ms,
+                        hydro_rule=current_rule,
+                        observed_at_ms=observed_at_ms,
+                    )
+                    if synced["deadline_reached"] and store.transition(
+                        tid,
+                        {"ready"},
+                        "collecting",
+                        "OJ 已提前结束，正在按新截止时间收卷",
                     ):
                         _spawn(pipe.collect, tid)
                 elif now >= end and store.transition(
@@ -452,19 +542,38 @@ def tick() -> None:
                 ):
                     _spawn(pipe.collect, tid)
                 elif now < end:
+                    last_sync = int(contest.get("time_sync_at_ms") or 0)
+                    if (
+                        contest.get("time_sync_error")
+                        or observed_at_ms - last_sync >= 30_000
+                    ):
+                        store.mark_time_sync(
+                            tid, observed_at_ms=observed_at_ms, error=""
+                        )
                     try:
-                        sync = pipe.sync_roster(tid)
+                        pipe.sync_roster(tid)
                         _notify_released_seats(contest)
-                        if sync["assigned"] > int(contest["max_participants"]):
-                            raise RuntimeError("已分配人数超过登记上限")
                     except Exception as exc:
                         log.exception("seat pool roster sync failed for %s", tid)
                         store.set_state(
                             tid,
                             "ready",
-                            f"座位池名单同步需要教师处理：{exc}",
+                            f"自动扩座或名单同步失败，系统将重试：{exc}",
                         )
-        except Exception:
+        except Exception as exc:
+            if contest.get("state") == "ready":
+                try:
+                    store.mark_time_sync(
+                        tid,
+                        observed_at_ms=observed_at_ms,
+                        error=(
+                            "OJ 时间读取失败"
+                            if not time_source_read
+                            else f"OJ 时间同步失败：{type(exc).__name__}"
+                        ),
+                    )
+                except Exception:
+                    log.exception("cannot persist time sync error for %s", tid)
             log.exception("scheduler tick failed for %s", tid)
 
 
@@ -499,6 +608,18 @@ def _reconcile_desktop_access() -> None:
         log.exception("desktop security-group reconciliation failed")
 
 
+def _retention_sweep() -> None:
+    """Apply local-only retention; OJ authority data is never in scope."""
+    try:
+        result = retention.sweep()
+        if result["workspace"] or result["evidence"]:
+            log.info("local retention sweep completed %s", result)
+    except Exception:
+        # A cleanup failure is deliberately non-destructive and retryable. It
+        # must never affect the OJ, the active desktop route, or contest state.
+        log.exception("local retention sweep failed closed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global REALTIME_JUDGE_THREAD
@@ -523,6 +644,14 @@ async def lifespan(_: FastAPI):
             )
         ),
         id="desktop-access-reconcile",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _retention_sweep,
+        "interval",
+        hours=6,
+        id="local-retention",
         max_instances=1,
         coalesce=True,
     )
@@ -622,6 +751,24 @@ def require_csrf(value: str) -> None:
         raise HTTPException(403, "CSRF 校验失败")
 
 
+def _audit_teacher(
+    teacher: str,
+    tid: str,
+    action: str,
+    *,
+    outcome: str = "requested",
+    details: dict | None = None,
+) -> None:
+    """Persist a non-sensitive teacher action before accepting a mutation."""
+    store.append_audit(
+        actor=f"teacher:{teacher}",
+        action=action,
+        outcome=outcome,
+        tid=tid,
+        details=details,
+    )
+
+
 def gateway_url(ip: str, token: str) -> str:
     server = cfg["contest_server"]
     base = gateway_base_url(server, ip)
@@ -694,9 +841,9 @@ code{background:#eee;padding:2px 6px;border-radius:4px}</style></head><body>
 {% if seat %}<div class="seat"><b>{{ seat.uname }}</b> 同学，你的座位：<br>
 桌面入口：<a href="{{ seat.url }}" target="_blank" rel="noopener">{{ seat.url }}</a><br>
 连接密码：<code>{{ seat.vnc_pass }}</code><br>
-提交方式：<b>{{ seat.mode_label }}</b><br>
-{% if seat.web_submit_url %}网页递交：<a href="{{ seat.web_submit_url }}" target="_blank" rel="noopener">打开程序回收页面</a><br>{% endif %}
-打开桌面链接 → Connect → 输入密码。文件夹模式按桌面【答案文件夹】内的规定目录保存。<br>
+交卷规则：<b>{{ seat.mode_label }}</b><br>
+程序回收：<a href="{{ seat.web_submit_url }}" target="_blank" rel="noopener">打开 CSP 程序回收系统</a><br>
+打开桌面链接 → Connect → 输入密码。代码始终保存在桌面【03_答案文件夹】规定目录；每次递交和截止收卷都读取这里的正式文件。<br>
 {% if notice %}<a href="{{ notice }}" target="_blank" rel="noopener">选手操作文档</a>{% endif %}
 </div>{% else %}<form method="post" action="query">
 <input name="uname" autocomplete="username" placeholder="OJ 用户名" required>
@@ -782,10 +929,10 @@ WEB_SUBMIT_PAGE = templates.from_string(
     + PROGRAM_COLLECTION_CSS
     + """</style></head><body><main class="frame"><header class="brand"><strong>CSP 程序回收系统</strong><a class="logout" href="/submit/{{ seat.submit_token }}/logout">退出登录</a></header><div class="body">
 <aside class="side"><div class="seat-meta"><span>◷</span>{{ now }}</div><div class="seat-meta"><span>♟</span>{{ seat.candidate }}</div><a class="nav" href="#notice"><span class="ico">●</span>考试须知</a><a class="nav" href="/submit/{{ seat.submit_token }}/paper"><span class="ico">⬇</span>试题下载</a><a class="nav active" href="/submit/{{ seat.submit_token }}"><span class="ico">✎</span>答题</a><a class="nav" href="#messages"><span class="ico">✉</span>0条未读消息</a></aside>
-<section class="stage"><div class="card"><div class="card-title">答题</div><div class="content"><div id="notice" class="notice">请先在 NOI Linux 中完成代码编写、编译和调试，再点击对应题目的“提交”，粘贴或上传完整源代码。每次提交都会先可靠保存，再立即以你的身份送入本场 OJ 评测。为保持复赛模拟，页面不会显示分数、测试点或编译结果；教师可以在 OJ 后台实时观察。代码可以多次提交，每题以最后一次提交为准。</div>
+<section class="stage"><div class="card"><div class="card-title">答题</div><div class="content"><div id="notice" class="notice">请先在 NOI Linux 的正式答案目录中完成代码编写、保存、编译和自测，再点击对应题目的“递交正式文件”。系统会直接读取规定目录里的 <b>题目名.cpp</b>，可靠保存后立即以你的身份送入本场 OJ 评测；不需要再次选择文件或粘贴代码。比赛期间不会显示分数、测试点或编译结果，教师可以在 OJ 后台实时观察。允许多次递交，以截止时正式答案目录中的最终版本为准。</div>
 {% if saved %}<div class="success">{{ saved }}.cpp 已被程序回收系统接收，并将自动送入 OJ 评测；请使用“查看”核对完整内容、时间和字节数。</div>{% endif %}{% if not opened %}<div class="closed">当前不在 Hydro 比赛提交时间内，提交通道已经关闭。</div>{% endif %}
 <p class="candidate">准考证号：{{ seat.candidate }}</p><table class="answer-table"><thead><tr><th>序号</th><th>试题名称</th><th>提交时间</th><th>内容长度</th><th>OJ送评状态</th><th>操作</th></tr></thead><tbody>
-{% for problem in problems %}{% set item = latest.get(problem) %}<tr><td>{{ loop.index }}</td><td>第 {{ loop.index }} 题：{{ problem }}</td><td>{% if item %}{{ item.created_at }}{% else %}<span class="empty">尚未提交</span>{% endif %}</td><td>{% if item %}{{ item.size }}B{% else %}0B{% endif %}</td><td>{% if not item %}<span class="empty">—</span>{% elif item.judge_state == 'submitted' %}<span class="judge-ok">已送入 OJ</span>{% elif item.judge_state in ('pending','sending') %}<span class="judge-wait">等待送评</span>{% elif item.judge_state == 'retry' %}<span class="judge-wait">送评重试中</span>{% elif item.judge_state == 'permanent_failed' %}<span class="judge-error">送评异常，教师处理中</span>{% else %}<span class="judge-local">已在本地保存</span>{% endif %}</td><td><div class="actions">{% if item %}<a class="btn btn-view" href="/submit/{{ seat.submit_token }}/view/{{ problem }}">查看</a><a class="btn btn-view" href="/submit/{{ seat.submit_token }}/download/{{ problem }}">下载源码</a>{% else %}<span class="btn btn-view btn-disabled">查看</span><span class="btn btn-view btn-disabled">下载源码</span>{% endif %}<a class="btn btn-submit{% if not opened %} btn-disabled{% endif %}" href="/submit/{{ seat.submit_token }}/edit/{{ problem }}">提交</a></div></td></tr>{% endfor %}
+{% for problem in problems %}{% set item = latest.get(problem) %}<tr><td>{{ loop.index }}</td><td>第 {{ loop.index }} 题：{{ problem }}</td><td>{% if item %}{{ item.created_at }}{% else %}<span class="empty">尚未递交</span>{% endif %}</td><td>{% if item %}{{ item.size }}B{% else %}0B{% endif %}</td><td>{% if not item %}<span class="empty">—</span>{% elif item.judge_state == 'submitted' %}<span class="judge-ok">已送入 OJ</span>{% elif item.judge_state in ('pending','sending') %}<span class="judge-wait">等待送评</span>{% elif item.judge_state == 'retry' %}<span class="judge-wait">送评重试中</span>{% elif item.judge_state == 'ambiguous' %}<span class="judge-error">送评结果待核对，请勿重复递交同一请求</span>{% elif item.judge_state == 'permanent_failed' %}<span class="judge-error">送评异常，教师处理中</span>{% else %}<span class="judge-local">已在本地保存</span>{% endif %}</td><td><div class="actions">{% if item %}<a class="btn btn-view" href="/submit/{{ seat.submit_token }}/view/{{ problem }}">查看</a><a class="btn btn-view" href="/submit/{{ seat.submit_token }}/download/{{ problem }}">下载源码</a>{% else %}<span class="btn btn-view btn-disabled">查看</span><span class="btn btn-view btn-disabled">下载源码</span>{% endif %}<form method="post" action="/submit/{{ seat.submit_token }}/formal/{{ problem }}"><input type="hidden" name="client_nonce" value="{{ submit_nonces[problem] }}"><button class="btn btn-submit{% if not opened %} btn-disabled{% endif %}"{% if not opened %} disabled{% endif %}>递交正式文件</button></form></div></td></tr>{% endfor %}
 </tbody></table><p id="messages" class="small">“已送入 OJ”表示 OJ 已创建评测记录并进入判题队列，不代表判题已经结束。比赛期间不会向选手显示评测结果。</p></div></div></section></div></main></body></html>"""
 )
 
@@ -801,13 +948,15 @@ WEB_EDIT_PAGE = templates.from_string(
 WEB_VIEW_PAGE = templates.from_string(
     """<!doctype html><html><head><meta charset="utf-8"><title>查看提交 - CSP 程序回收系统</title><style>"""
     + PROGRAM_COLLECTION_CSS
-    + """</style></head><body><main class="frame"><header class="brand"><strong>CSP 程序回收系统</strong><a class="logout" href="/submit/{{ seat.submit_token }}/logout">退出登录</a></header><div class="body"><aside class="side"><div class="seat-meta"><span>♟</span>{{ seat.candidate }}</div><a class="nav active" href="/submit/{{ seat.submit_token }}"><span class="ico">✎</span>答题</a></aside><section class="stage"><div class="card"><div class="card-title">查看提交</div><div class="content"><div class="actions"><a class="btn back" href="/submit/{{ seat.submit_token }}">返回答题页面</a><a class="btn btn-submit" href="/submit/{{ seat.submit_token }}/download/{{ problem }}">下载源码</a></div><h2>{{ problem }}.cpp</h2><p class="meta">提交时间：{{ submission.created_at }}　内容长度：{{ submission.size }}B　SHA256：{{ submission.sha256 }}　送评状态：{% if submission.judge_state == 'submitted' %}已送入 OJ{% elif submission.judge_state in ('pending','sending','retry') %}处理中{% elif submission.judge_state == 'permanent_failed' %}异常，教师处理中{% else %}本地保存{% endif %}</p><pre class="code-view">{{ submission.source }}</pre></div></div></section></div></main></body></html>"""
+    + """</style></head><body><main class="frame"><header class="brand"><strong>CSP 程序回收系统</strong><a class="logout" href="/submit/{{ seat.submit_token }}/logout">退出登录</a></header><div class="body"><aside class="side"><div class="seat-meta"><span>♟</span>{{ seat.candidate }}</div><a class="nav active" href="/submit/{{ seat.submit_token }}"><span class="ico">✎</span>答题</a></aside><section class="stage"><div class="card"><div class="card-title">查看提交</div><div class="content"><div class="actions"><a class="btn back" href="/submit/{{ seat.submit_token }}">返回答题页面</a><a class="btn btn-submit" href="/submit/{{ seat.submit_token }}/download/{{ problem }}">下载源码</a></div><h2>{{ problem }}.cpp</h2><p class="meta">提交时间：{{ submission.created_at }}　内容长度：{{ submission.size }}B　SHA256：{{ submission.sha256 }}　送评状态：{% if submission.judge_state == 'submitted' %}已送入 OJ{% elif submission.judge_state in ('pending','sending','retry') %}处理中{% elif submission.judge_state == 'ambiguous' %}结果待只读核对，系统不会自动重发{% elif submission.judge_state == 'permanent_failed' %}异常，教师处理中{% else %}本地保存{% endif %}</p><pre class="code-view">{{ submission.source }}</pre></div></div></section></div></main></body></html>"""
 )
 
 MODE_LABELS = {
-    "folder": "答案文件夹自动回收",
-    "web": "网页递交（北京模式）",
-    "both": "双轨：网页为正式提交，文件夹为备份",
+    # Legacy database values remain readable during the V1 migration, but the
+    # product exposes one submission contract only.
+    "folder": "正式答案目录 + 每次递交到 OJ",
+    "web": "正式答案目录 + 每次递交到 OJ",
+    "both": "正式答案目录 + 每次递交到 OJ",
 }
 
 CONTEST_STATE_LABELS = {
@@ -815,6 +964,8 @@ CONTEST_STATE_LABELS = {
     "preparing": "正在备赛",
     "ready": "进行中",
     "collecting": "正在收卷",
+    "safe_wait": "安全等待",
+    "safe_ended": "已安全结束",
     "done": "已结束",
     "error": "需要教师处理",
 }
@@ -834,31 +985,51 @@ form.inline{display:inline}code{background:#eef1f4;padding:2px 6px}.hint{color:#
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <label>Hydro 比赛 tid</label><input name="tid" size="28" required>
 <label>题目映射（AI 可留空）</label><input name="files" size="64" placeholder="AI 留空自动读取；人工可填 apple=P1001,banana=P1002">
-<label>提交方式</label><select name="submission_mode"><option value="both">双轨：网页正式、文件夹备份</option><option value="web">网页递交（北京模式）</option><option value="folder">答案文件夹自动回收</option></select>
+<label>交卷规则</label><span class="hint">正式答案目录是唯一代码源；每次点击递交都会进入 OJ，截止时自动核对最终文件。</span>
 <label>备赛材料</label><select name="materials_mode"><option value="ai">AI 生成草稿，教师审核后发布</option><option value="manual">老师上传 PDF / 自测数据</option></select>
-<label>最大参赛人数</label><input type="number" name="max_participants" min="1" max="30" value="{{ defaults.max_participants }}" required>
-<label>备用座位</label><input type="number" name="spare_seats" min="0" max="10" value="{{ defaults.spare_seats }}" required>
+<label>座位容量</label><span class="hint">按 OJ 已报名人数自动增加，并维持至少 2 个或报名人数 10% 的备用座位。</span>
 <label>提前发放分钟</label><input type="number" name="release_lead_minutes" min="1" max="60" value="{{ defaults.release_lead_minutes }}" required>
 <label>每题自测组数</label><input type="number" name="practice_groups" min="2" max="4" value="{{ defaults.practice_groups }}" required>
 <label>人工试题 PDF</label><input type="file" name="paper" accept="application/pdf,.pdf">
 <label>人工自测数据 ZIP</label><input type="file" name="testdata" accept="application/zip,.zip">
 </div><p class="hint">AI 模式可不填题目映射：系统按 Hydro 比赛题目顺序读取，优先采用题目 config.filename，其次安全的公开题号，最后使用 problem1、problem2；登记后会先显示最终 slug.in/out，教师确认后才克隆。AI 无需上传文件，机器校验通过后仍需教师另点批准。人工模式继续填写映射并上传 PDF；ZIP 只读下发，不收卷、不计分。</p><button>登记比赛</button></form></div>
 <div class="card"><h3>已登记比赛</h3><table><tr><th>比赛</th><th>材料</th><th>座位池</th><th>运行状态</th><th>操作</th></tr>
-{% for c in contests %}<tr><td><code>{{ c.tid }}</code><br><b>{{ c.title }}</b><br><span class="hint">{{ mode_labels.get(c.submission_mode, c.submission_mode) }}<br>上限 {{ c.max_participants }} 人 + {{ c.spare_seats }} 备用<br>提前 {{ c.release_lead_minutes }} 分钟发放</span></td>
+{% for c in contests %}<tr><td><code>{{ c.tid }}</code><br><b>{{ c.title }}</b><br><span class="hint">正式答案目录 + 每次递交到 OJ<br>座位按报名自动增加，当前目标 {{ c.max_participants }} 正式 + {{ c.spare_seats }} 备用<br>提前 {{ c.release_lead_minutes }} 分钟发放</span></td>
 <td><span class="hint"><b>当前文件读写（生成前请确认）</b>{% for item in c.file_io_preview %}<br><code>{{ item.slug }}.in / {{ item.slug }}.out</code>{% if item.pid %} → Hydro {{ item.pid }}{% endif %}{% endfor %}</span><br>{% if c.material_state == 'approved' %}<span class="ok">已批准并冻结</span><br><code>{{ c.active_material_revision }}</code><br><span class="hint">PDF {{ c.paper_sha256[:12] }}…<br>{% if c.testdata_sha256 %}自测 {{ c.testdata_files }} 个文件{% else %}无自测数据{% endif %}</span>
 {% elif c.material_state == 'review' %}<span class="warn">已克隆原题为本场私有题，等待教师审核 PDF</span>{% elif c.material_state == 'draft' %}<span class="block">机器校验尚未完成，草稿不可批准</span>{% else %}<span class="block">未就绪：{{ c.material_state }}</span>{% endif %}
 {% if c.artifact_job %}<br><span class="hint">生成任务 {{ c.artifact_job.state }} / {{ c.artifact_job.progress }}%<br>{{ c.artifact_job.message or c.artifact_job.error }}{% if c.artifact_job.details.file_io_plan %}<br>已验证 {{ c.artifact_job.details.file_io_plan|length }} 道私有克隆题的文件读写{% endif %}</span>{% endif %}</td>
 <td>{% if c.pool_counts %}<span class="ok">已建立 r{{ c.pool_revision }}</span><br><span class="hint">待建 {{ c.pool_counts.get('planned',0) }} / 预热中 {{ c.pool_counts.get('warming',0) }} / 已验收 {{ c.pool_counts.get('verified',0) }} / 已预留 {{ c.pool_counts.get('reserved',0) }} / 已发放 {{ c.pool_counts.get('released',0) }}</span>{% else %}<span class="hint">尚未预热</span>{% endif %}</td>
-<td><b>{{ c.state }}</b><br><span class="hint">{{ c.message }}</span></td><td class="actions">
+<td><b>{{ c.state }}</b><br><span class="hint">{{ c.message }}<br>OJ 时间最近同步：{{ c.time_sync_label or '尚未同步' }}{% if c.time_sync_error %}<br><span class="block">时间同步异常：{{ c.time_sync_error }}</span>{% endif %}</span></td><td class="actions">
 {% if c.materials_mode == 'ai' %}{% if not c.artifact_job or c.artifact_job.state in ('error','interrupted') %}<form class="inline" method="post" action="/admin/materials/generate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button onclick="return confirm('点击即表示批准：为本场创建或复用私有题副本，并改为 slug.in/out。共享原题不会修改；AI 只生成待审核草稿，仍须另行预览 PDF 和报告后批准发放。')">批准私有克隆并生成 AI 审核草稿</button></form><br><span class="hint">共享原题不改；AI 结果不会自动发放，须预览 PDF 与机器报告后另点批准。</span>{% elif c.artifact_job.state == 'done' %}<span class="hint">本场已生成过审核材料。为防止复用陈旧题面或数据指纹，不允许直接重新生成；如题目已修改，请在 Hydro 新建比赛后重新登记。</span>{% endif %}{% endif %}
 {% for a in c.artifacts %}{% if a.state == 'review' %}<br><span class="hint">{{ a.revision }}：已克隆/验证 {{ a.file_io_plan|length }} 道题，待审核 PDF</span> <form class="inline" method="post" action="/admin/materials/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="revision" value="{{ a.revision }}"><button>批准 {{ a.revision }}</button></form> <a href="/admin/materials/{{ c.tid }}/{{ a.revision }}/paper" target="_blank">预览 PDF</a> <a href="/admin/materials/{{ c.tid }}/{{ a.revision }}/manifest" target="_blank">下载 manifest</a> <a href="/admin/materials/{{ c.tid }}/{{ a.revision }}/validation" target="_blank">下载机器校验报告</a>{% elif a.state == 'draft' %}<br><span class="block">{{ a.revision }} 仍是机器草稿，不可批准</span>{% endif %}{% endfor %}
 <form class="inline" method="post" action="/admin/prepare"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button {% if c.material_state != 'approved' %}disabled title="请先批准材料"{% endif %}>提前预热全部座位</button></form>
 <form class="inline" method="post" action="/admin/sync-roster"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button>同步报名名单</button></form>
-{% if c.pool_revision is not none and c.state == 'ready' %}<br><form class="inline" method="post" action="/admin/pool/grow"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}">主座位 +<input type="number" name="additional_main" min="0" max="5" value="1" required>备用 +<input type="number" name="additional_spares" min="0" max="5" value="1" required><label><input type="checkbox" name="teacher_approved" value="yes" required>教师确认</label><button onclick="return confirm('确认只增量创建新座位？现有学生座位不会重建。')">现场扩容</button></form>
-<br><form class="inline" method="post" action="/admin/pool/replace"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}"><select name="slot_no" required><option value="">选择故障座位</option>{% for s in c.pool_seats %}{% if s.state not in ('planned','frozen','collected') %}<option value="{{ s.slot_no }}">{{ '%03d'|format(s.slot_no) }} · {{ s.state }}{% if s.uname %} · {{ s.uname }}{% endif %}</option>{% endif %}{% endfor %}</select><input name="reason" maxlength="200" placeholder="故障原因（必填）" required><label><input type="checkbox" name="teacher_approved" value="yes" required>教师确认切换</label><button onclick="return confirm('确认隔离该座位，并在有学生时切换到已验收备用位？')">替换故障座位</button></form>{% endif %}
+{% if c.pool_revision is not none and c.state == 'ready' %}<br><span class="hint">正式座位按 OJ 报名自动增加，系统会持续维持备用座位。</span>
+<br><form class="inline" method="post" action="/admin/pool/replace"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}"><select name="slot_no" required><option value="">选择故障座位</option>{% for s in c.pool_seats %}{% if s.state not in ('planned','frozen','collected') %}<option value="{{ s.slot_no }}">{{ '%03d'|format(s.slot_no) }} · {{ s.state }}{% if s.uname %} · {{ s.uname }}{% endif %}</option>{% endif %}{% endfor %}</select><input name="reason" maxlength="200" placeholder="故障原因（必填）" required><label><input type="checkbox" name="teacher_approved" value="yes" required>教师确认切换</label><button onclick="return confirm('确认隔离该座位，并在有学生时切换到已验收备用位？')">替换故障座位</button></form>{% for s in c.pool_seats %}{% if s.state == 'planned' and s.failure_count|int > 0 %}<form class="inline" method="post" action="/admin/pool/repair"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}"><input type="hidden" name="slot_no" value="{{ s.slot_no }}"><button onclick="return confirm('重新创建并验收座位 {{ '%03d'|format(s.slot_no) }}，恢复备用容量？')">修复备用容量 {{ '%03d'|format(s.slot_no) }}</button></form>{% endif %}{% endfor %}{% endif %}
 <form class="inline" method="post" action="/admin/collect"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button>收卷 / 失败重试</button></form>
 <a href="/admin/export/{{ c.tid }}">导出已发放座位</a>　<a target="_blank" rel="noopener" href="{{ hydro_public_base_url }}/contest/{{ c.tid }}/scoreboard?realtime=1">OJ 实时监控</a></td></tr>{% endfor %}</table>
-<p class="hint">预热阶段按“最大人数 + 备用座位”启动并逐个验收；学生报名后只绑定已验收座位，并按本场登记的提前分钟开放和发送 Hydro 站内消息。OJ 实时监控仅教师可看，OI 赛制下学生保持盲测。</p></div></body></html>"""
+<p class="hint">预热阶段按 OJ 当前报名人数自动启动并逐个验收；新增报名会自动补充座位。学生每次递交都形成 OJ 记录，截止时系统核对正式答案目录并补齐最终版本。OJ 实时监控仅教师可看，OI 赛制下学生保持盲测。</p></div></body></html>"""
+)
+
+ADMIN_SECTIONS = {
+    "overview": "比赛总览",
+    "materials": "比赛材料",
+    "seats": "学生座位",
+    "submissions": "递交与评测",
+    "finish": "结束与归档",
+}
+
+ADMIN_V1_PAGE = templates.from_string(
+    """<!doctype html><html><head><meta charset="utf-8"><title>{{ section_label }} · NOI Linux 考试系统</title>
+<style>*{box-sizing:border-box}body{margin:0;font-family:Arial,"Microsoft YaHei",sans-serif;background:#f4f6f9;color:#203044}.shell{max-width:1400px;margin:0 auto;padding:24px}.top{display:flex;align-items:center;justify-content:space-between}.brand{font-size:24px;font-weight:700}.sub{color:#65758b;font-size:13px}.nav{display:flex;gap:8px;margin:22px 0;flex-wrap:wrap}.nav a{padding:10px 15px;border-radius:8px;background:#fff;border:1px solid #d8e0e8;color:#29445f;text-decoration:none}.nav a.active{background:#1769aa;color:#fff;border-color:#1769aa}.card{background:#fff;border:1px solid #dce3ea;border-radius:10px;padding:18px 20px;margin:14px 0;box-shadow:0 2px 8px #dfe5eb}.grid{display:grid;grid-template-columns:180px minmax(260px,1fr);gap:7px 10px;align-items:center}.grid label{text-align:right;color:#405366}input,button,select{padding:8px;margin:3px;font-size:14px}input[type=file]{max-width:330px}button,.button{display:inline-block;border:1px solid #1769aa;background:#1769aa;color:#fff;border-radius:6px;padding:8px 12px;text-decoration:none;cursor:pointer}button.secondary,.button.secondary{background:#fff;color:#1769aa}button:disabled{border-color:#aaa;background:#ddd;color:#777;cursor:not-allowed}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #e0e6ec;padding:11px 9px;text-align:left;vertical-align:top}th{background:#f4f7fa}.hint{color:#65758b;font-size:13px;line-height:1.55}.ok{color:#087b35;font-weight:700}.warn{color:#ad6300;font-weight:700}.block{color:#b00020;font-weight:700}.pill{display:inline-block;padding:3px 8px;border-radius:12px;background:#eef3f8;margin:2px}.actions{line-height:2.8}code{background:#eef1f4;padding:2px 5px;border-radius:4px}.empty{padding:36px;text-align:center;color:#65758b}</style></head><body><main class="shell"><div class="top"><div><div class="brand">NOI Linux 考试系统</div><div class="sub">OJ 系统负责比赛与评测；这里负责标准考试桌面、程序回收和安全归档。</div></div><a class="button secondary" target="_blank" rel="noopener" href="{{ oj_base_url }}">打开 OJ 系统</a></div>
+<nav class="nav">{% for key,label in sections.items() %}<a class="{% if key == section %}active{% endif %}" href="/admin/{{ key }}">{{ label }}</a>{% endfor %}</nav>
+{% if section == 'overview' %}<section class="card"><h2>创建一场考试</h2><form method="post" enctype="multipart/form-data" action="/admin/register"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid"><label>OJ 比赛编号</label><input name="tid" size="30" required><label>程序名映射</label><input name="files" size="64" placeholder="自动生成可留空；人工材料示例 apple=P1001"><label>材料方式</label><select name="materials_mode"><option value="ai">自动生成，老师审核后发布</option><option value="manual">老师上传 PDF 和辅助数据</option></select><label>提前发放</label><input type="number" name="release_lead_minutes" min="1" max="60" value="{{ defaults.release_lead_minutes }}" required><label>每题辅助数据</label><select name="practice_groups">{% for value in (2,3,4) %}<option value="{{ value }}"{% if value == defaults.practice_groups %} selected{% endif %}>{{ value }} 组 .in/.out</option>{% endfor %}</select><label>人工试题 PDF</label><input type="file" name="paper" accept="application/pdf,.pdf"><label>人工辅助数据 ZIP</label><input type="file" name="testdata" accept="application/zip,.zip"></div><p class="hint">报名人数、正式座位和备用座位由系统自动计算。每次递交都会进入 OJ；截止时以正式答案目录中的最后版本为准。</p><button>读取比赛并创建</button></form></section>
+<section class="card"><h2>当前比赛</h2>{% if not contests %}<div class="empty">尚未创建比赛</div>{% else %}<table><tr><th>比赛</th><th>阶段</th><th>进度</th><th>下一步</th></tr>{% for c in contests %}<tr><td><b>{{ c.title }}</b><br><code>{{ c.tid }}</code><br><span class="hint">{{ c.begin_label }} — {{ c.end_label }}</span></td><td><span class="pill">{{ c.state_label }}</span><br><span class="hint">{{ c.message }}</span></td><td>材料：{% if c.material_state == 'approved' %}<span class="ok">已发布</span>{% else %}<span class="warn">{{ c.material_state_label }}</span>{% endif %}<br>座位：{{ c.pool_bound }} 已绑定 / {{ c.pool_total }} 总数<br>递交：{{ c.delivery.counts.submitted }} 已送评</td><td>{% if c.material_state != 'approved' %}<a class="button" href="/admin/materials">审核材料</a>{% elif c.state in ('registered','error') %}<a class="button" href="/admin/seats">准备座位</a>{% elif c.state == 'ready' %}<a class="button" href="/admin/submissions">查看比赛</a>{% else %}<a class="button" href="/admin/finish">查看收卷</a>{% endif %}</td></tr>{% endfor %}</table>{% endif %}</section>
+{% elif section == 'materials' %}<section class="card"><h2>比赛材料</h2><p class="hint">系统固定生成 CSP 风格 PDF 与每题 2～4 组不计分的 .in/.out。只有 OJ 附件与学生桌面字节完全一致时，才允许进入备赛。</p>{% for c in contests %}<article class="card"><h3>{{ c.title }}</h3><p>{% for item in c.file_io_preview %}<span class="pill">{{ item.slug }}.in / {{ item.slug }}.out</span>{% endfor %}</p>{% if c.material_state == 'approved' %}<p class="ok">已发布并冻结：{{ c.active_material_revision }}</p><p class="hint">PDF {{ c.paper_sha256[:12] }}…；辅助数据 {{ c.testdata_files }} 个文件；OJ 回执 {% if c.material_publication %}{{ c.material_publication.receipt_sha256[:12] }}…{% else %}<span class="block">缺失</span>{% endif %}</p>{% else %}<p class="warn">{{ c.material_state_label }}</p>{% endif %}<div class="actions">{% if c.materials_mode == 'ai' and (not c.artifact_job or c.artifact_job.state in ('error','interrupted')) %}<form style="display:inline" method="post" action="/admin/materials/generate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button>生成待审核材料</button></form>{% endif %}{% for a in c.artifacts %}{% if a.state == 'review' %}<a class="button secondary" target="_blank" href="/admin/materials/{{ c.tid }}/{{ a.revision }}/paper">预览 PDF</a><a class="button secondary" target="_blank" href="/admin/materials/{{ c.tid }}/{{ a.revision }}/validation">查看校验报告</a><form style="display:inline" method="post" action="/admin/materials/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="revision" value="{{ a.revision }}"><button onclick="return confirm('确认 PDF、程序名和辅助数据无误，并发布到 OJ 与学生桌面？')">批准并发布</button></form>{% endif %}{% endfor %}</div></article>{% else %}<div class="empty">请先在比赛总览创建比赛</div>{% endfor %}</section>
+{% elif section == 'seats' %}<section class="card"><h2>学生座位</h2><p class="hint">报名后自动增加新座位；系统持续保留至少 2 个或报名人数 10% 的备用座位，不需要老师审核扩容。</p>{% for c in contests %}<article class="card"><h3>{{ c.title }} · {{ c.state_label }}</h3><p><span class="pill">总座位 {{ c.pool_total }}</span><span class="pill">已绑定 {{ c.pool_bound }}</span><span class="pill">已发放 {{ c.pool_counts.get('released',0) }}</span><span class="pill">已验收备用 {{ c.pool_counts.get('verified',0) }}</span></p><div class="actions">{% if c.state in ('registered','error') %}<form style="display:inline" method="post" action="/admin/prepare"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button {% if c.material_state != 'approved' %}disabled{% endif %}>运行教师测试并准备座位</button></form>{% endif %}{% if c.pool_revision is not none and c.state == 'ready' %}<form style="display:inline" method="post" action="/admin/pool/replace"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}"><select name="slot_no" required><option value="">选择故障座位</option>{% for s in c.pool_seats %}{% if s.state not in ('planned','frozen','collected') %}<option value="{{ s.slot_no }}">{{ '%03d'|format(s.slot_no) }} · {{ s.state }}{% if s.uname %} · {{ s.uname }}{% endif %}</option>{% endif %}{% endfor %}</select><input name="reason" maxlength="200" placeholder="故障原因" required><input type="hidden" name="teacher_approved" value="yes"><button onclick="return confirm('确认隔离故障座位并自动切换到备用位？')">替换故障座位</button></form>{% for s in c.pool_seats %}{% if s.state == 'planned' and s.failure_count|int > 0 %}<form style="display:inline" method="post" action="/admin/pool/repair"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}"><input type="hidden" name="slot_no" value="{{ s.slot_no }}"><button onclick="return confirm('重新创建并验收座位 {{ '%03d'|format(s.slot_no) }}，恢复备用容量？')">修复备用容量 {{ '%03d'|format(s.slot_no) }}</button></form>{% endif %}{% endfor %}{% endif %}<a class="button secondary" href="/admin/export/{{ c.tid }}">下载座位状态</a></div></article>{% else %}<div class="empty">暂无座位</div>{% endfor %}</section>
+{% elif section == 'submissions' %}<section class="card"><h2>递交与评测</h2><p class="hint">老师在 OJ 系统查看源码、每次评测与实时分数。本页只显示送达状态，不展示或导出学生密码。</p>{% for c in contests %}<article class="card"><h3>{{ c.title }}</h3><p><span class="pill">已送评 {{ c.delivery.counts.submitted }}</span><span class="pill">等待 {{ c.delivery.counts.pending + c.delivery.counts.sending }}</span><span class="pill">重试 {{ c.delivery.counts.retry }}</span><span class="pill">待核对 {{ c.delivery.counts.ambiguous }}</span><span class="pill">异常 {{ c.delivery.counts.permanent_failed }}</span></p><p><span class="pill">入口通知已送达 {{ c.notifications.counts.sent }}</span><span class="pill">通知待处理 {{ c.notifications.counts.pending + c.notifications.counts.retry }}</span><span class="pill">通知异常 {{ c.notifications.counts.permanent_failed }}</span></p>{% if c.delivery.safe and c.notifications.safe %}<p class="ok">递交与通知队列正常</p>{% else %}<p class="block">存在待处理、待核对或异常项目，系统不会自动重发不确定递交，也不会静默结束比赛。</p>{% endif %}{% if c.notifications.counts.permanent_failed %}<form class="inline" method="post" action="/admin/notifications/retry"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button>重试失败通知</button></form>{% endif %}<a class="button" target="_blank" rel="noopener" href="{{ oj_base_url }}/contest/{{ c.tid }}/scoreboard?realtime=1">在 OJ 系统查看比赛</a></article>{% else %}<div class="empty">暂无比赛</div>{% endfor %}</section>
+{% elif section == 'finish' %}<section class="card"><h2>结束与归档</h2><p class="hint">OJ 时间是唯一比赛时间。截止后系统冻结正式答案目录、补齐最后版本、等待评测队列清空并生成归档；只有证据完整才会安全关机。</p>{% for c in contests %}<article class="card"><h3>{{ c.title }} · {{ c.state_label }}</h3><p>收卷证据：{% if c.collection_receipt_sha256 %}<span class="ok">{{ c.collection_receipt_sha256[:12] }}…</span>{% else %}<span class="warn">尚未生成</span>{% endif %}<br>安全关机：{% if c.shutdown_verified_at_ms %}<span class="ok">已核验</span>{% elif c.shutdown_after_ms %}<span class="warn">等待保护期结束</span>{% else %}<span class="hint">尚未进入关机阶段</span>{% endif %}</p><form method="post" action="/admin/collect"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button onclick="return confirm('只在需要提前结束或自动收卷失败时使用。确认现在开始收卷？')">提前结束 / 重试收卷</button></form>{% if not c.delivery.safe %}<p class="block">递交队列尚未清空，禁止关机。</p>{% endif %}</article>{% else %}<div class="empty">暂无归档</div>{% endfor %}</section>{% endif %}
+</main></body></html>"""
 )
 
 
@@ -957,19 +1128,14 @@ def student_query(uname: str = Form(...), password: str = Form(...)):
                 continue
             _, ip = cvm.status()
             url = gateway_url(ip, seat["token"])
-            mode = str(contest.get("submission_mode") or "folder")
             return _html(
                 STUDENT_PAGE.render(
                     seat={
                         "uname": uname,
                         "url": url,
                         "vnc_pass": seat["vnc_pass"],
-                        "mode_label": MODE_LABELS.get(mode, mode),
-                        "web_submit_url": (
-                            web_submit_url(seat["submit_token"])
-                            if mode in {"web", "both"}
-                            else ""
-                        ),
+                        "mode_label": "正式答案目录 + 每次递交到 OJ",
+                        "web_submit_url": web_submit_url(seat["submit_token"]),
                     },
                     error=None,
                     notice=cfg["orchestrator"].get("student_notice_url"),
@@ -1024,7 +1190,12 @@ def _web_login_response(
             contest_state_label=CONTEST_STATE_LABELS.get(
                 contest_state, contest_state
             ),
-            contest_done=contest_state == "done",
+            contest_done=contest_state in {
+                "collecting",
+                "safe_wait",
+                "safe_ended",
+                "done",
+            },
             script_nonce=script_nonce,
         ),
         status_code=status_code,
@@ -1045,9 +1216,6 @@ def _web_submit_context(token: str) -> tuple[dict, dict, list[str], dict]:
         raise HTTPException(403, "座位分配校验失败")
     if assignment and assignment.get("state") != "released":
         raise HTTPException(403, "座位尚未到发放时间")
-    mode = str(contest.get("submission_mode") or "folder")
-    if mode not in {"web", "both"}:
-        raise HTTPException(403, "本场比赛未启用网页递交")
     problems = json.loads(contest["files"])
     latest = store.latest_web_submissions(seat["tid"], int(seat["uid"]))
     return seat, contest, problems, latest
@@ -1215,9 +1383,41 @@ def web_submit_page(
             opened=_submission_window_open(contest),
             saved=saved if saved in problems else "",
             mode_label=MODE_LABELS.get(contest["submission_mode"], ""),
+            submit_nonces={
+                problem: RealtimeJudge.new_client_nonce() for problem in problems
+            },
             now=datetime.now().strftime("%H:%M:%S"),
         )
     )
+
+
+@app.post("/submit/{token}/formal/{problem}")
+def web_submit_formal_file(
+    request: Request,
+    token: str,
+    problem: str,
+    client_nonce: str = Form(...),
+):
+    seat, contest, problems, _ = _web_submit_context(token)
+    if not _submit_authenticated(request, token):
+        return _submit_login_redirect(token)
+    if problem not in problems:
+        raise HTTPException(400, "题目名称不属于本场比赛")
+    if not _submission_window_open(contest):
+        raise HTTPException(409, "当前不在 OJ 比赛递交时间内")
+    maximum = int(cfg["orchestrator"].get("web_submit_max_bytes", 102400))
+    try:
+        payload = pipe.read_formal_source(
+            str(contest["tid"]),
+            int(seat["uid"]),
+            problem,
+            maximum_bytes=maximum,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(409, f"无法读取正式文件：{exc}") from exc
+    normalized = _normalize_uploaded_source(payload, maximum)
+    _enqueue_web_source(seat, contest, problem, normalized, client_nonce)
+    return RedirectResponse(f"/submit/{token}?saved={problem}", status_code=303)
 
 
 @app.post("/submit/{token}/login", response_class=HTMLResponse)
@@ -1283,19 +1483,9 @@ def web_submit_edit(request: Request, token: str, problem: str):
     seat, contest, problems, _ = _web_submit_context(token)
     if not _submit_authenticated(request, token):
         return _submit_login_redirect(token)
-    if not _submission_window_open(contest):
-        raise HTTPException(409, "当前不在 Hydro 比赛提交时间内")
     if problem not in problems:
         raise HTTPException(404, "题目名称不属于本场比赛")
-    return _web_submit_response(
-        WEB_EDIT_PAGE.render(
-            seat=seat,
-            problem=problem,
-            problem_index=problems.index(problem) + 1,
-            client_nonce=RealtimeJudge.new_client_nonce(),
-            now=datetime.now().strftime("%H:%M:%S"),
-        )
-    )
+    return RedirectResponse(f"/submit/{token}", status_code=303)
 
 
 @app.get("/submit/{token}/view/{problem}", response_class=HTMLResponse)
@@ -1341,18 +1531,13 @@ def web_submit_code(
     client_nonce: str = Form(...),
     source: UploadFile = File(...),
 ):
-    seat, contest, problems, _ = _web_submit_context(token)
+    _, _, _, _ = _web_submit_context(token)
     if not _submit_authenticated(request, token):
         return _submit_login_redirect(token)
-    if problem not in problems:
-        raise HTTPException(400, "题目名称不属于本场比赛")
-    if not (source.filename or "").lower().endswith(".cpp"):
-        raise HTTPException(400, "请选择 .cpp 源代码文件")
-    maximum = int(cfg["orchestrator"].get("web_submit_max_bytes", 102400))
-    payload = source.file.read(maximum + 1)
-    normalized = _normalize_uploaded_source(payload, maximum)
-    _enqueue_web_source(seat, contest, problem, normalized, client_nonce)
-    return RedirectResponse(f"/submit/{token}?saved={problem}", status_code=303)
+    raise HTTPException(
+        410,
+        "旧上传入口已停用；请返回程序回收系统，点击“递交正式文件”",
+    )
 
 
 @app.post("/submit/{token}/paste")
@@ -1363,23 +1548,38 @@ def web_submit_paste(
     client_nonce: str = Form(...),
     code: str = Form(...),
 ):
-    seat, contest, problems, _ = _web_submit_context(token)
+    _, _, _, _ = _web_submit_context(token)
     if not _submit_authenticated(request, token):
         return _submit_login_redirect(token)
-    if problem not in problems:
-        raise HTTPException(400, "题目名称不属于本场比赛")
-    maximum = int(cfg["orchestrator"].get("web_submit_max_bytes", 102400))
-    normalized = _normalize_pasted_source(code, maximum)
-    _enqueue_web_source(seat, contest, problem, normalized, client_nonce)
-    return RedirectResponse(f"/submit/{token}?saved={problem}", status_code=303)
+    raise HTTPException(
+        410,
+        "旧粘贴入口已停用；请返回程序回收系统，点击“递交正式文件”",
+    )
 
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin(_: str = Depends(require_admin)):
-    try:
-        cloud_state, cloud_ip = cvm.status()
-    except Exception as exc:
-        cloud_state, cloud_ip = "ERROR", str(exc)
+    return _admin_page("overview")
+
+
+@app.get("/admin/{section}", response_class=HTMLResponse)
+def admin_section(section: str, _: str = Depends(require_admin)):
+    if section not in ADMIN_SECTIONS:
+        raise HTTPException(404, "教师页面不存在")
+    return _admin_page(section)
+
+
+def _admin_time_label(value_ms: int) -> str:
+    if int(value_ms or 0) <= 0:
+        return "未设置"
+    return (
+        datetime.fromtimestamp(int(value_ms) / 1000, timezone.utc)
+        .astimezone(ZoneInfo("Asia/Shanghai"))
+        .strftime("%Y-%m-%d %H:%M")
+    )
+
+
+def _admin_page(section: str) -> HTMLResponse:
     contests = []
     for item in store.contests():
         contest = dict(item)
@@ -1408,15 +1608,58 @@ def admin(_: str = Depends(require_admin)):
             contest["pool_seats"] = []
         contest["artifact_job"] = store.latest_artifact_job(contest["tid"])
         contest["artifacts"] = store.artifact_revisions(contest["tid"])
+        active_revision = str(contest.get("active_material_revision") or "")
+        contest["material_publication"] = (
+            store.material_publication(contest["tid"], active_revision)
+            if active_revision
+            else None
+        )
+        contest["delivery"] = store.contest_delivery_health(contest["tid"])
+        contest["notifications"] = store.contest_notification_health(contest["tid"])
+        contest["audit_events"] = store.audit_events(contest["tid"], limit=8)
+        contest["pool_total"] = len(contest["pool_seats"])
+        contest["pool_bound"] = sum(
+            1 for seat in contest["pool_seats"] if seat.get("uid") is not None
+        )
+        contest["state_label"] = CONTEST_STATE_LABELS.get(
+            str(contest.get("state") or ""), str(contest.get("state") or "未知")
+        )
+        if contest.get("state") == "ready":
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            contest["state_label"] = (
+                "等待开赛"
+                if now_ms < int(contest.get("begin_at_ms") or 0)
+                else "比赛进行中"
+            )
+        contest["material_state_label"] = {
+            "pending": "等待生成或上传",
+            "generating": "正在生成",
+            "draft": "机器校验未完成",
+            "review": "等待老师审核",
+            "approved": "已发布",
+        }.get(
+            str(contest.get("material_state") or ""),
+            str(contest.get("material_state") or "未知"),
+        )
+        contest["begin_label"] = _admin_time_label(contest.get("begin_at_ms") or 0)
+        contest["end_label"] = _admin_time_label(contest.get("end_at_ms") or 0)
+        sync_ms = int(contest.get("time_sync_at_ms") or 0)
+        contest["time_sync_label"] = (
+            datetime.fromtimestamp(sync_ms / 1000, timezone.utc)
+            .astimezone(ZoneInfo("Asia/Shanghai"))
+            .strftime("%Y-%m-%d %H:%M:%S")
+            if sync_ms
+            else ""
+        )
         contests.append(contest)
     return _html(
-        ADMIN_PAGE.render(
+        ADMIN_V1_PAGE.render(
             contests=contests,
-            cloud_state=cloud_state,
-            cloud_ip=cloud_ip,
+            section=section,
+            section_label=ADMIN_SECTIONS[section],
+            sections=ADMIN_SECTIONS,
             csrf=ADMIN_CSRF,
-            mode_labels=MODE_LABELS,
-            hydro_public_base_url=str(cfg["hydro"]["public_base_url"]).rstrip("/"),
+            oj_base_url=str(cfg["hydro"]["public_base_url"]).rstrip("/"),
             defaults={
                 "max_participants": int(
                     cfg["orchestrator"].get("default_max_participants", 15)
@@ -1439,6 +1682,8 @@ def _approve_manual_artifact(tid: str, approved_by: str) -> dict:
     contest = store.get_contest(tid)
     if not contest or not contest.get("paper_sha256"):
         raise RuntimeError("人工材料缺少试题 PDF")
+    if not contest.get("testdata_sha256"):
+        raise RuntimeError("V1 人工材料缺少辅助自测数据")
     files = [
         {
             "path": "paper.pdf",
@@ -1501,7 +1746,28 @@ def _approve_manual_artifact(tid: str, approved_by: str) -> dict:
         testdata_files=int(contest.get("testdata_files") or 0),
         testdata_expanded_size=int(contest.get("testdata_expanded_size") or 0),
     )
-    return store.approve_artifact(tid, revision, approved_by)
+    paper_path = material_paper_path(
+        cfg["orchestrator"].get("materials_dir", "/app/data/materials"), tid
+    )
+    testdata_path = material_testdata_archive_path(
+        cfg["orchestrator"].get("materials_dir", "/app/data/materials"), tid
+    )
+    publication = material_publisher.publish(
+        tid=tid,
+        revision=revision,
+        paper_path=paper_path,
+        paper_sha256=str(contest["paper_sha256"]),
+        testdata_path=testdata_path,
+        testdata_sha256=str(contest["testdata_sha256"]),
+    )
+    if publication.get("ok") is not True:
+        raise RuntimeError("OJ 未确认接收比赛 PDF 与辅助自测数据")
+    return store.approve_artifact_with_publication(
+        tid,
+        revision,
+        approved_by,
+        publication,
+    )
 
 
 def _verify_reusable_manual_files(
@@ -1577,13 +1843,29 @@ def _activate_generated_artifact(tid: str, revision: str, approved_by: str) -> d
     ):
         if not path.is_file() or sha256_file(path) != digest:
             raise RuntimeError(f"材料文件缺失或哈希不符: {path.name}")
-    if artifact.get("testdata_sha256"):
-        if not testdata.is_file() or sha256_file(testdata) != artifact["testdata_sha256"]:
-            raise RuntimeError("学生自测数据缺失或哈希不符")
+    if not artifact.get("testdata_sha256"):
+        raise RuntimeError("V1 材料版本缺少辅助自测数据")
+    if not testdata.is_file() or sha256_file(testdata) != artifact["testdata_sha256"]:
+        raise RuntimeError("学生自测数据缺失或哈希不符")
     # Generated files remain in their immutable revision directory. Downstream
     # resolution follows active_material_revision, so approval has no mutable
     # legacy-file copy step that could partially fail or overwrite old files.
-    return store.approve_artifact(tid, revision, approved_by)
+    publication = material_publisher.publish(
+        tid=tid,
+        revision=revision,
+        paper_path=paper,
+        paper_sha256=str(artifact["paper_sha256"]),
+        testdata_path=testdata,
+        testdata_sha256=str(artifact["testdata_sha256"]),
+    )
+    if publication.get("ok") is not True:
+        raise RuntimeError("OJ 未确认接收比赛 PDF 与辅助自测数据")
+    return store.approve_artifact_with_publication(
+        tid,
+        revision,
+        approved_by,
+        publication,
+    )
 
 
 _TID = re.compile(r"^[0-9a-fA-F]{24}$")
@@ -1594,8 +1876,10 @@ _FILE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 def admin_register(
     tid: str = Form(...),
     files: str = Form(""),
+    # Accepted only for compatibility with older automation; ignored below.
     submission_mode: str = Form("folder"),
     materials_mode: str = Form("ai"),
+    # V1 capacity comes from the live OJ roster; legacy form values are ignored.
     max_participants: int = Form(15),
     spare_seats: int = Form(2),
     release_lead_minutes: int = Form(5),
@@ -1605,25 +1889,13 @@ def admin_register(
     testdata: UploadFile | None = File(None),
     _: str = Depends(require_admin),
 ):
+    teacher = _
     require_csrf(csrf)
     tid = tid.strip()
     if not _TID.fullmatch(tid):
         raise HTTPException(400, "比赛 tid 必须是 24 位 ObjectId")
-    if submission_mode not in MODE_LABELS:
-        raise HTTPException(400, "提交方式无效")
     if materials_mode not in {"ai", "manual"}:
         raise HTTPException(400, "备赛材料方式无效")
-    maximum_cap = int(cfg["orchestrator"].get("seat_pool_maximum", 30))
-    if not 1 <= int(max_participants) <= maximum_cap:
-        raise HTTPException(400, f"比赛最大人数必须在 1 到 {maximum_cap} 之间")
-    if not 0 <= int(spare_seats) <= min(10, int(max_participants)):
-        raise HTTPException(400, "备用座位数必须在 0 到 10 之间且不能超过最大人数")
-    total_cap = int(cfg["orchestrator"].get("seat_pool_total_maximum", 40))
-    if int(max_participants) + int(spare_seats) > total_cap:
-        raise HTTPException(
-            400,
-            f"正式座位与备用座位总数不能超过 {total_cap}",
-        )
     if not 1 <= int(release_lead_minutes) <= 60:
         raise HTTPException(400, "座位发放提前量必须在 1 到 60 分钟之间")
     if not 2 <= int(practice_groups) <= 4:
@@ -1633,16 +1905,14 @@ def admin_register(
         or (testdata is not None and testdata.filename)
     ):
         raise HTTPException(400, "AI 自动生成模式无需上传 PDF 或测试数据 ZIP")
-    if submission_mode in {"web", "both"} and not cfg["hydro"].get(
-        "submit_enabled"
-    ):
-        raise HTTPException(503, "实时评测未启用，不能登记 web/both 模式")
+    if not cfg["hydro"].get("submit_enabled"):
+        raise HTTPException(503, "OJ 实时评测未启用，不能登记 V1 比赛")
     document = hydro.get_contest(tid)
     if not document:
         raise HTTPException(400, "Hydro 中找不到该比赛 tid")
-    if submission_mode in {"web", "both"} and str(document.get("rule", "")) != "oi":
+    if str(document.get("rule", "")) != "oi":
         raise HTTPException(
-            400, "网页实时评测只允许 Hydro OI 赛制，以保证学生赛中看不到结果"
+            400, "NOI Linux V1 只允许 OJ 的 OI 赛制，以保证学生赛中盲测"
         )
     try:
         begin_at_ms = int(_utc(document["beginAt"]).timestamp() * 1000)
@@ -1705,7 +1975,12 @@ def admin_register(
             raise HTTPException(503, "暂时无法核验 Hydro 题目映射") from exc
 
     existing = store.get_contest(tid)
-    if existing and existing.get("state") in {"preparing", "ready", "collecting"}:
+    if existing and existing.get("state") in {
+        "preparing",
+        "ready",
+        "collecting",
+        "safe_wait",
+    }:
         raise HTTPException(
             409, "比赛正在备赛、进行或收卷，禁止重新登记以免改变实时送评会话"
         )
@@ -1762,19 +2037,30 @@ def admin_register(
             require_testdata=testdata_data is None,
         )
 
+    _audit_teacher(
+        teacher,
+        tid,
+        "contest.register",
+        details={
+            "materials_mode": materials_mode,
+            "practice_groups": int(practice_groups),
+        },
+    )
     store.upsert_contest(
         tid,
         str(document.get("title", tid)),
         file_list,
         pid_map,
-        submission_mode,
+        "both",
         begin_at_ms=begin_at_ms,
         end_at_ms=end_at_ms,
         hydro_rule=str(document.get("rule") or ""),
         materials_mode=materials_mode,
         material_state="pending" if materials_mode == "ai" else "review",
-        max_participants=int(max_participants),
-        spare_seats=int(spare_seats),
+        # The authoritative values are replaced from the live roster during
+        # prepare and every later synchronization.
+        max_participants=0,
+        spare_seats=2,
         release_lead_minutes=int(release_lead_minutes),
         practice_groups=int(practice_groups),
     )
@@ -1804,22 +2090,54 @@ def admin_register(
             expanded_size,
         )
     if materials_mode == "manual":
-        _approve_manual_artifact(tid, _)
+        _approve_manual_artifact(tid, teacher)
     return RedirectResponse("../admin", status_code=303)
 
 
 @app.post("/admin/prepare")
 def admin_prepare(
-    tid: str = Form(...), csrf: str = Form(...), _: str = Depends(require_admin)
+    tid: str = Form(...),
+    csrf: str = Form(...),
+    teacher: str = Depends(require_admin),
 ):
     require_csrf(csrf)
     contest = store.get_contest(tid)
     if not contest or contest.get("material_state") != "approved":
         raise HTTPException(409, "备赛材料尚未由教师批准并冻结")
+    _audit_teacher(teacher, tid, "contest.prepare")
     if not store.transition(tid, {"registered", "error"}, "preparing", "手动触发备赛"):
         raise HTTPException(409, "当前状态不允许备赛")
     _spawn(pipe.prepare, tid)
     return RedirectResponse("../admin", status_code=303)
+
+
+@app.post("/admin/notifications/retry")
+def admin_retry_notifications(
+    tid: str = Form(...),
+    csrf: str = Form(...),
+    teacher: str = Depends(require_admin),
+):
+    require_csrf(csrf)
+    tid = tid.strip()
+    if not _TID.fullmatch(tid):
+        raise HTTPException(400, "比赛 tid 必须是 24 位 ObjectId")
+    if notifier is None:
+        raise HTTPException(503, "OJ 入口通知未启用")
+    try:
+        changed = store.retry_failed_seat_notifications(tid)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except SubmissionConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    _audit_teacher(
+        teacher,
+        tid,
+        "contest.notifications.retry",
+        details={"requeued": int(changed)},
+    )
+    if changed:
+        _spawn_notification_retry(tid)
+    return RedirectResponse("/admin/submissions", status_code=303)
 
 
 @app.post("/admin/materials/generate")
@@ -1832,6 +2150,7 @@ def admin_material_generate(
     require_csrf(csrf)
     if artifact_runner is None:
         raise HTTPException(503, "AI 材料生成尚未安全配置")
+    _audit_teacher(teacher, tid.strip(), "contest.materials.generate")
     try:
         job = artifact_runner.start(tid.strip(), teacher)
     except (KeyError, ValueError, RuntimeError, SubmissionConflictError) as exc:
@@ -1914,19 +2233,6 @@ def _verified_artifact_json_file(
     return path, artifact
 
 
-@app.get("/admin/materials/{tid}/{revision}/manifest")
-def admin_material_manifest(
-    tid: str, revision: str, _: str = Depends(require_admin)
-):
-    path, _ = _verified_artifact_json_file(tid, revision, "manifest.json")
-    return FileResponse(
-        path,
-        media_type="application/json",
-        filename=f"{tid}-{revision}-manifest.json",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
 @app.get("/admin/materials/{tid}/{revision}/validation")
 def admin_material_validation(
     tid: str, revision: str, _: str = Depends(require_admin)
@@ -1950,6 +2256,12 @@ def admin_material_approve(
     teacher: str = Depends(require_admin),
 ):
     require_csrf(csrf)
+    _audit_teacher(
+        teacher,
+        tid,
+        "contest.materials.approve",
+        details={"revision": revision},
+    )
     try:
         _activate_generated_artifact(tid, revision, teacher)
     except (KeyError, RuntimeError, SubmissionConflictError) as exc:
@@ -1959,79 +2271,18 @@ def admin_material_approve(
 
 @app.post("/admin/collect")
 def admin_collect(
-    tid: str = Form(...), csrf: str = Form(...), _: str = Depends(require_admin)
+    tid: str = Form(...),
+    csrf: str = Form(...),
+    teacher: str = Depends(require_admin),
 ):
     require_csrf(csrf)
     if not store.seats(tid):
         raise HTTPException(409, "座位表为空，无法收卷")
+    _audit_teacher(teacher, tid, "contest.collect")
     if not store.transition(tid, {"ready", "error"}, "collecting", "手动触发收卷"):
         raise HTTPException(409, "当前状态不允许收卷")
     _spawn(pipe.collect, tid)
     return RedirectResponse("../admin", status_code=303)
-
-
-@app.post("/admin/sync-roster")
-def admin_sync_roster(
-    tid: str = Form(...), csrf: str = Form(...), _: str = Depends(require_admin)
-):
-    require_csrf(csrf)
-    try:
-        result = pipe.sync_roster(tid, teacher_approved=True)
-        contest = store.get_contest(tid)
-        if contest:
-            _notify_released_seats(contest)
-            store.set_state(
-                tid,
-                "ready",
-                f"已同步 Hydro 报名 {result['roster']} 人；"
-                f"绑定 {result['assigned']} 人",
-            )
-    except Exception as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return RedirectResponse("../admin", status_code=303)
-
-
-@app.post("/admin/pool/grow")
-def admin_pool_grow(
-    tid: str = Form(...),
-    additional_main: int = Form(0),
-    additional_spares: int = Form(0),
-    expected_revision: int = Form(...),
-    teacher_approved: str = Form(""),
-    csrf: str = Form(...),
-    _: str = Depends(require_admin),
-):
-    require_csrf(csrf)
-    tid = tid.strip()
-    if not _TID.fullmatch(tid):
-        raise HTTPException(400, "比赛 tid 无效")
-    if teacher_approved != "yes":
-        raise HTTPException(400, "现场扩容需要教师明确勾选确认")
-    if not 0 <= additional_main <= 5 or not 0 <= additional_spares <= 5:
-        raise HTTPException(400, "单次最多增加 5 个主座位和 5 个备用座位")
-    if additional_main + additional_spares < 1:
-        raise HTTPException(400, "至少增加一个座位")
-    contest = store.get_contest(tid)
-    pool = store.seat_pool(tid)
-    if not contest or contest.get("state") != "ready" or not pool:
-        raise HTTPException(409, "比赛不在可现场扩容状态")
-    if int(pool["revision"]) != int(expected_revision):
-        raise HTTPException(409, "座位池状态已变化，请刷新后台后重试")
-    store.set_state(
-        tid,
-        "ready",
-        f"教师已确认现场扩容：主座位 +{additional_main}，"
-        f"备用座位 +{additional_spares}；原座位保持运行",
-    )
-    _spawn_pool_operation(
-        pipe.grow_pool,
-        tid,
-        additional_main=additional_main,
-        additional_spares=additional_spares,
-        expected_revision=expected_revision,
-        teacher_approved=True,
-    )
-    return RedirectResponse("/admin", status_code=303)
 
 
 @app.post("/admin/pool/replace")
@@ -2042,7 +2293,7 @@ def admin_pool_replace(
     expected_revision: int = Form(...),
     teacher_approved: str = Form(""),
     csrf: str = Form(...),
-    _: str = Depends(require_admin),
+    teacher: str = Depends(require_admin),
 ):
     require_csrf(csrf)
     tid = tid.strip()
@@ -2069,6 +2320,12 @@ def admin_pool_replace(
     )
     if not seat or seat.get("state") in {"planned", "frozen", "collected"}:
         raise HTTPException(409, "所选座位当前不能替换")
+    _audit_teacher(
+        teacher,
+        tid,
+        "contest.seat.replace",
+        details={"slot_no": int(slot_no), "pool_revision": int(expected_revision)},
+    )
     store.set_state(
         tid,
         "ready",
@@ -2085,22 +2342,77 @@ def admin_pool_replace(
     return RedirectResponse("/admin", status_code=303)
 
 
+@app.post("/admin/pool/repair")
+def admin_pool_repair(
+    tid: str = Form(...),
+    slot_no: int = Form(...),
+    expected_revision: int = Form(...),
+    csrf: str = Form(...),
+    teacher: str = Depends(require_admin),
+):
+    require_csrf(csrf)
+    tid = tid.strip()
+    if not _TID.fullmatch(tid):
+        raise HTTPException(400, "比赛 tid 无效")
+    contest = store.get_contest(tid)
+    pool = store.seat_pool(tid)
+    if not contest or contest.get("state") != "ready" or not pool:
+        raise HTTPException(409, "比赛不在可恢复备用容量状态")
+    if int(pool["revision"]) != int(expected_revision):
+        raise HTTPException(409, "座位池状态已变化，请刷新后台后重试")
+    seat = next(
+        (
+            item
+            for item in pool["state"].get("seats", [])
+            if int(item.get("slot_no", -1)) == int(slot_no)
+        ),
+        None,
+    )
+    if not seat or seat.get("state") != "planned" or \
+            seat.get("uid") is not None or int(seat.get("failure_count") or 0) < 1:
+        raise HTTPException(409, "所选座位不需要容量修复")
+    _audit_teacher(
+        teacher,
+        tid,
+        "contest.seat.capacity_repair",
+        details={"slot_no": int(slot_no), "pool_revision": int(expected_revision)},
+    )
+    store.set_state(
+        tid, "ready", f"正在重建座位 {int(slot_no):03d}，恢复备用容量"
+    )
+    _spawn_pool_operation(
+        pipe.repair_pool_capacity,
+        tid,
+        slot_no=int(slot_no),
+        expected_revision=int(expected_revision),
+    )
+    return RedirectResponse("/admin/seats", status_code=303)
+
+
 def _csv_cell(value: str) -> str:
     return "'" + value if value[:1] in ("=", "+", "-", "@") else value
 
 
 @app.get("/admin/export/{tid}")
-def admin_export(tid: str, _: str = Depends(require_admin)):
-    _, ip = cvm.status()
+def admin_export(tid: str, teacher: str = Depends(require_admin)):
+    _audit_teacher(teacher, tid, "contest.seats.export", outcome="completed")
+    pool = store.seat_pool(tid)
+    pool_by_uid = {
+        int(item["uid"]): item
+        for item in ((pool or {}).get("state") or {}).get("seats", [])
+        if isinstance(item, dict) and isinstance(item.get("uid"), int)
+    }
     output = io.StringIO(newline="")
     writer = csv.writer(output)
-    writer.writerow(["用户名", "桌面入口", "连接密码"])
+    writer.writerow(["用户名", "考号", "座位号", "座位状态"])
     for seat in store.seats(tid):
+        assignment = pool_by_uid.get(int(seat["uid"]), {})
         writer.writerow(
             [
                 _csv_cell(seat["uname"]),
-                gateway_url(ip, seat["token"]),
-                seat["vnc_pass"],
+                _csv_cell(seat["candidate"]),
+                assignment.get("slot_no", ""),
+                assignment.get("state", "unknown"),
             ]
         )
     return PlainTextResponse(
@@ -2110,15 +2422,15 @@ def admin_export(tid: str, _: str = Depends(require_admin)):
     )
 
 
-@app.post("/admin/boot")
 def admin_boot(csrf: str = Form(...), _: str = Depends(require_admin)):
+    """Operator-only compatibility helper; deliberately has no HTTP route."""
     require_csrf(csrf)
     pipe.boot_server()
     return RedirectResponse("../admin", status_code=303)
 
 
-@app.post("/admin/shutdown")
 def admin_shutdown(csrf: str = Form(...), _: str = Depends(require_admin)):
+    """Operator-only fail-closed helper; deliberately has no HTTP route."""
     require_csrf(csrf)
     pipe.shutdown_server()
     return RedirectResponse("../admin", status_code=303)
@@ -2162,8 +2474,15 @@ def healthz():
         "max_retry_attempts": notification_metrics["max_retry_attempts"],
         "oldest_retry_at": notification_metrics["oldest_retry_at"],
     }
+    active_seats = store.active_seat_count()
     if realtime_judge is None:
-        active_states = {"registered", "preparing", "ready", "collecting"}
+        active_states = {
+            "registered",
+            "preparing",
+            "ready",
+            "collecting",
+            "safe_wait",
+        }
         active_realtime_contests = [
             {
                 "tid": str(contest["tid"]),
@@ -2187,6 +2506,7 @@ def healthz():
             "active_realtime_contests": active_realtime_contests,
             "seat_notifications": notification_payload,
             "desktop_access": desktop_access,
+            "active_seats": active_seats,
         }
         if not payload["ok"]:
             return JSONResponse(payload, status_code=503)
@@ -2204,6 +2524,7 @@ def healthz():
     queue_healthy = (
         int(counts.get("retry", 0)) == 0
         and int(counts.get("permanent_failed", 0)) == 0
+        and int(counts.get("ambiguous", 0)) == 0
         and int(queue["oldest_waiting_ms"]) <= backlog_limit_ms
     )
     healthy = (
@@ -2228,5 +2549,6 @@ def healthz():
         },
         "seat_notifications": notification_payload,
         "desktop_access": desktop_access,
+        "active_seats": active_seats,
     }
     return JSONResponse(payload, status_code=200 if healthy else 503)

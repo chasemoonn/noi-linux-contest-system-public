@@ -83,8 +83,11 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "${script_dir}/.." && pwd)"
 schema_source="${repo_dir}/release/local-image-bundle-manifest.schema.json"
 import_source="${script_dir}/import-local-image-bundle.sh"
+archive_identity_verifier="${script_dir}/verify_docker_archive_identity.py"
 [[ -f "${schema_source}" ]] || die "manifest schema not found: ${schema_source}"
 [[ -f "${import_source}" ]] || die "import script not found: ${import_source}"
+[[ -f "${archive_identity_verifier}" ]] \
+    || die "archive identity verifier not found: ${archive_identity_verifier}"
 
 safe_name="${image_tag//\//_}"
 safe_name="${safe_name//:/_}"
@@ -149,41 +152,13 @@ after_save_id="$(docker image inspect "${image_tag}" --format '{{.Id}}')"
 [[ "${after_save_id}" == "${image_id}" ]] \
     || die "image tag changed during export: ${image_id} -> ${after_save_id}"
 
-save_manifest="${tmp_dir}/docker-save-manifest.json"
-tar -xOf "${archive_tar}" manifest.json >"${save_manifest}" \
-    || die 'cannot read manifest.json from Docker archive'
-archive_config_path="$({
-    python3 - "${save_manifest}" "${image_tag}" "${image_id}" <<'PY'
-import json
-import sys
-
-manifest_path, expected_tag, expected_id = sys.argv[1:]
-with open(manifest_path, "r", encoding="utf-8") as handle:
-    document = json.load(handle)
-if not isinstance(document, list) or len(document) != 1:
-    raise SystemExit("Docker archive must contain exactly one image record")
-record = document[0]
-if record.get("RepoTags") != [expected_tag]:
-    raise SystemExit("Docker archive does not contain exactly the requested tag")
-config_digest = expected_id[len("sha256:"):]
-config_path = record.get("Config", "")
-valid_config_paths = {
-    config_digest,
-    config_digest + ".json",
-    "blobs/sha256/" + config_digest,
-}
-if config_path not in valid_config_paths:
-    raise SystemExit("Docker archive config digest does not match the image ID")
-print(config_path)
-PY
-} 2>&1)" || die "invalid Docker archive: ${archive_config_path}"
-config_sha256="$(
-    tar -xOf "${archive_tar}" -- "${archive_config_path}" \
-        | sha256sum \
-        | awk '{print $1}'
-)"
-[[ "${config_sha256}" == "${image_id#sha256:}" ]] \
-    || die 'Docker archive config content SHA256 does not match the image ID'
+archive_identity="$({
+    python3 "${archive_identity_verifier}" \
+        --archive "${archive_tar}" \
+        --expected-tag "${image_tag}" \
+        --expected-image-id "${image_id}"
+} 2>&1)" || die "invalid Docker archive: ${archive_identity}"
+printf '%s\n' "${archive_identity}"
 
 if [[ "${compression}" == 'zstd' ]]; then
     archive_file="${safe_name}.tar.zst"
@@ -258,7 +233,7 @@ chmod 0700 -- "${tmp_dir}/import-local-image-bundle.sh"
 )
 manifest_sha256="$(sha256sum -- "${manifest_path}" | awk '{print $1}')"
 checksums_sha256="$(sha256sum -- "${tmp_dir}/SHA256SUMS" | awk '{print $1}')"
-rm -f -- "${inspect_file}" "${save_manifest}"
+rm -f -- "${inspect_file}"
 mv -T -- "${tmp_dir}" "${bundle_dir}"
 tmp_dir=''
 trap - EXIT

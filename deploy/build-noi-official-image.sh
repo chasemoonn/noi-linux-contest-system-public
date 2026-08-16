@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EXPECTED_SHA256="C8824240736352E5E4AAF3F6532B40961F75FA9F23D670BB78881355A49D5878"
+EXPECTED_SHA256="c8824240736352e5e4aaf3f6532b40961f75fa9f23d670bb78881355a49d5878"
 EXPECTED_DESKTOP_CONTRACT="finalizer-status-v1"
 ISO_PATH="${1:-}"
 IMAGE_TAG="${2:-noi-linux-official:2.0}"
@@ -29,7 +29,7 @@ if ! command -v bsdtar >/dev/null 2>&1 && ! command -v xorriso >/dev/null 2>&1; 
     exit 2
 fi
 
-actual="$(sha256sum "${ISO_PATH}" | awk '{print toupper($1)}')"
+actual="$(sha256sum "${ISO_PATH}" | awk '{print tolower($1)}')"
 if [[ "${actual}" != "${EXPECTED_SHA256}" ]]; then
     echo "ISO SHA256 不匹配" >&2
     echo "期望: ${EXPECTED_SHA256}" >&2
@@ -77,6 +77,7 @@ echo "[4/4] 加入 noVNC 远程显示层 ${IMAGE_TAG}"
 docker build \
     --build-arg "NOI_ROOTFS_IMAGE=${ROOTFS_TAG}" \
     --build-arg "NOI_SOURCE_REVISION=${SOURCE_REVISION}" \
+    --build-arg "NOI_ISO_SHA256=${EXPECTED_SHA256}" \
     -t "${IMAGE_TAG}" "${PROJECT_DIR}/noi-linux-official"
 
 # Resolve the mutable tag once and verify the immutable image ID used below.

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 terminal capacity shutdown probe configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "health_url", "docker_socket", "controller_container_id", "controller_image_id", "controller_baseline"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "health_url": {"type": "string", "pattern": "^https://[^/?#]+/healthz$"},
+    "docker_socket": {"const": "/var/run/docker.sock"},
+    "controller_container_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "controller_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "controller_baseline": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pid", "restart_count", "started_at"],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "restart_count": {"type": "integer", "minimum": 0},
+        "started_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

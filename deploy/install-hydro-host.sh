@@ -272,6 +272,11 @@ plugin_values = {
         '/root/.hydro/orchestrator-state/problem-drafts.json'
     ),
     'ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_MAX_ENTRIES': '2000',
+    'ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE': (
+        '/root/.hydro/orchestrator-state/materials.json'
+    ),
+    'ORCHESTRATOR_MATERIAL_IDEMPOTENCY_MAX_ENTRIES': '2000',
+    'ORCHESTRATOR_MATERIAL_MAX_BYTES': str(192 * 1024 * 1024),
     'ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS': frontend_domain,
 }
 plugin_temporary = plugin_env.with_suffix('.env.tmp')

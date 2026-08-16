@@ -27,7 +27,7 @@ docker image inspect noi-linux-official:2.0 >/dev/null 2>&1 \
 docker tag "${candidate}" noi-linux-official:2.0
 ```
 
-ISO 的期望 SHA256 是 `C8824240736352E5E4AAF3F6532B40961F75FA9F23D670BB78881355A49D5878`。构建脚本会把该来源和显式提供的源码 revision 写入镜像标签；revision 必须是发布包标注的 40 位小写提交 ID，不能在比赛服务器上临时猜测 `HEAD`。缺失、格式错误或镜像标签不匹配时验收立即失败。新版本必须先构建为候选标签，通过三种提交模式验收后才能提升为 `noi-linux-official:2.0`，旧正式镜像保留为回滚标签。OJ 服务器上的 `deploy-contest-image-from-oj.sh` 执行同一流程，但调用前还必须显式设置 `NOI_SOURCE_REVISION`：
+ISO 的期望 SHA256 是 `c8824240736352e5e4aaf3f6532b40961f75fa9f23d670bb78881355a49d5878`。构建脚本会把该来源和显式提供的源码 revision 写入镜像标签；摘要和 revision 都以小写十六进制写入，revision 必须是发布包标注的 40 位小写提交 ID，不能在比赛服务器上临时猜测 `HEAD`。缺失、格式错误或镜像标签不匹配时验收立即失败。新版本必须先构建为候选标签，通过三种提交模式验收后才能提升为 `noi-linux-official:2.0`，旧正式镜像保留为回滚标签。OJ 服务器上的 `deploy-contest-image-from-oj.sh` 执行同一流程，但调用前还必须显式设置 `NOI_SOURCE_REVISION`：
 
 ```bash
 source_revision='<发布包标注的40位小写Git提交ID>'
@@ -79,24 +79,26 @@ ssh-keygen -lf known_hosts -E sha256
 Hydro 运行在 Compose 时按 `deploy/hydro-compose-snippet.yml` 挂载 addon、
 状态目录和只读 token 文件，不要同时混用两种目录布局。
 
-不要把 token 直接写进 Compose YAML。Hydro 读取权限 `0600` 的 token 文件，并为三类操作配置互相独立、位于持久卷中的状态文件：
+不要把 token 直接写进 Compose YAML。Hydro 读取权限 `0600` 的 token 文件，并为四类操作配置互相独立、位于持久卷中的状态文件：
 
 ```text
 ORCHESTRATOR_TOKEN_FILE=/root/.hydro/orchestrator-token
 ORCHESTRATOR_IDEMPOTENCY_FILE=/root/.hydro/orchestrator-state/submissions.json
 ORCHESTRATOR_NOTIFICATION_IDEMPOTENCY_FILE=/root/.hydro/orchestrator-state/notifications.json
 ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE=/root/.hydro/orchestrator-state/problem-drafts.json
+ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE=/root/.hydro/orchestrator-state/materials.json
+ORCHESTRATOR_MATERIAL_MAX_BYTES=201326592
 ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS=exam.example.test
 ```
 
 `install-hydro-orchestrator-addon.sh` 和 `health-check.sh` 都从
-`/root/.hydro/orchestrator-plugin.env` 读取这三个实际状态文件路径，并逐一要求文件已存在、
+`/root/.hydro/orchestrator-plugin.env` 读取这四个实际状态文件路径，并逐一要求文件已存在、
 权限为 `0600` 且可写；不要再依赖旧的
 `/root/.hydro/orchestrator-idempotency.json` 默认路径。
 
 allowlist 是逗号分隔的精确 DNS 主机名，不带 `https://`、端口、路径或通配符。它必须与编排器 `hydro.notify_allowed_https_hosts` 一致；否则 T-5 座位通知会失败关闭，而不是把密码发往未知站点。PM2 部署必须用 `restart hydrooj --update-env` 后 `pm2 save --force`，且只能运行一个 Hydro 应用进程。Compose 部署按 `deploy/hydro-compose-snippet.yml` 建立持久状态卷和只读 token 文件。
 
-插件提供三个仅本机调用的端点：实时/最终送评、Hydro 原生结构化座位通知、比赛私有文件 I/O 题预检与克隆。站内消息不是 Markdown；插件用 Hydro 的 rich-text 参数生成安全链接。用真实测试比赛、已报名测试用户、比赛内题目进行联调；返回 `rid` 只表示 Hydro 已创建记录并将其送入判题队列，不表示评测完成，必须继续确认该 RID 到达终态且比赛状态已更新。
+插件提供四个仅本机调用的端点：实时/最终送评、Hydro 原生结构化座位通知、比赛私有文件 I/O 题预检与克隆，以及经哈希绑定的比赛 PDF/辅助自测数据发布。材料端点只管理固定的两个私有附件名；只有 OJ 回执与桌面材料字节完全一致时，编排器才会批准材料并允许备赛。站内消息不是 Markdown；插件用 Hydro 的 rich-text 参数生成安全链接。用真实测试比赛、已报名测试用户、比赛内题目进行联调；返回 `rid` 只表示 Hydro 已创建记录并将其送入判题队列，不表示评测完成，必须继续确认该 RID 到达终态且比赛状态已更新。
 
 安装或升级插件后，在 OJ 服务器执行以下命令，把回传接口从公网隐藏；脚本会先备份 Caddyfile，校验并热重载，失败时自动回滚：
 
@@ -179,6 +181,8 @@ cloud:
       reconcile_seconds: 5
 contest_server:
   gateway_listen: 80
+  # 专用 ECS 使用 0.0.0.0；多网卡资格实验室可绑定隔离比赛网卡。
+  gateway_bind_address: "${GATEWAY_BIND_ADDRESS:-0.0.0.0}"
   gateway_scheme: http
   gateway_public_base_url: "${GATEWAY_PUBLIC_BASE_URL:-}"
   no_vnc_quality: 9
@@ -219,19 +223,15 @@ ECS 必须绑定固定 EIP。`GATEWAY_PUBLIC_BASE_URL` 可留空以读取云 API
 
 学生必须使用编排服务生成的完整座位链接。链接中的 `path=s/<token>/websockify` 指定座位专属 WebSocket，`reconnect=true&reconnect_delay=5000` 用于短暂断线后自动恢复；转发、打印或手工复制时不得截掉查询参数。
 
-比赛登记时可选：
+V1 不提供提交模式选择。正式源码始终位于 `考号/题目名/题目名.cpp`；程序回收网页每次都重新读取该文件并送入 OJ，截止时再冻结目录、核对最后已确认源码 SHA，必要时补交最终版本。网页、桌面和收卷不再维护三套优先级。
 
-- `folder`：按 `选手编号/题目名/题目名.cpp` 到点自动回收，截止前不会创建 Hydro 评测记录。
-- `web`：NOI Linux 桌面打开“网页递交（北京模式）”；每次新的明确递交都会立即创建独立 Hydro 记录并入队，同题可重复提交，最后一次有效。
-- `both`：网页点击与 `web` 一样实时送评；收卷时复用最后一次网页记录的 RID，没有网页版本的题目才把答案文件夹版本作为最终记录送评，目录内容仍完整留档。
+`seat_pool_maximum` 限制正式人数，`seat_pool_total_maximum` 限制正式加备用的总容器数。容量由 OJ 实时报名驱动，备用位为至少 2 个或报名人数的 10%（向上取整）。系统先运行第一座教师测试，再逐座创建和验收；新报名自动增加座位，不需要老师手工扩容。默认到 T-5 才开放入口并通过 OJ 原生结构化消息发送，T-5 前学生查询不到密码。
 
-登记还要填写“最大参赛人数”和“备用座位”。`seat_pool_maximum` 限制正式人数，`seat_pool_total_maximum` 限制正式加备用的总容器数。点击“提前预热全部座位”时可以尚无 Hydro 报名用户：系统先按 `最大人数 + 备用座位` 创建一人一 Docker 的空座位池，逐个验证统一镜像/材料摘要、桌面、noVNC 和资料完整性；学生后来报名只绑定已验收座位。默认到 T-5 才开放入口并通过 Hydro 原生结构化消息发送，T-5 前学生查询不到密码。
-
-运行中确需增容，管理员必须在带当前 revision 的表单中明确勾选教师确认。系统只创建新增槽位，全部验收后原子发布；任何一个失败都撤销本次新增，不修改已有 `uid → slot`。单座位故障时使用“替换故障座位”：先暂停旧容器取得一致答案快照，再复制到已验收备用位并原子换绑；网关或数据库提交失败会恢复旧网关并恢复原容器。不要用重新备赛代替现场扩容或故障替换。
+单座位故障时使用“替换故障座位”：先暂停旧容器取得一致答案快照，再复制到已验收备用位并原子换绑；网关或数据库提交失败会恢复旧网关和原容器，或保持两边都不可写并明确报错。不要用重新备赛代替故障替换。
 
 AI 材料模式分两次教师授权：首先预检当前比赛题目，非文件读写题只克隆为本场私有题，绝不原地修改共享题；教师批准克隆计划后，系统才更新本场映射。Hydro 只返回正式输入的规范化 SHA256，正式输入内容不发送给 AI。随后 AI 起草 CSP 风格 Markdown/PDF 与 2～4 组自测输入；本地逐题检查其不与正式输入及样例 hash 重复、通过可信 validator，并用可信 oracle 独立运行两次生成一致 `.out`。教师必须预览 PDF、manifest 和 validation report 后再批准发布；批准前不能预热座位。
 
-登记会保存 Hydro 的 `beginAt`、`endAt` 和 `rule` 快照；备赛前再次读取 Hydro 严格比对。登记后若修改比赛时间或赛制，必须重新登记再备赛。备赛成功后，比赛 ECS 会安装持久化的 `noi-contest-freeze-<tid>.timer`，即使 OJ 控制面轮询延迟或 ECS 中途重启，也会在原截止点立即暂停座位；首次演练必须用 `systemctl status` 和实际到点冻结验证该 timer。
+登记会保存 OJ 的 `beginAt`、`endAt` 和 `rule` 快照；备赛前再次读取并严格比对。`ready` 期间 OJ 时间是唯一权威：延后时原子更新座位池和比赛机 timer，提前结束时立即收卷。备赛成功后，比赛 ECS 会安装持久化的 `noi-contest-freeze-<tid>.timer`，即使 OJ 控制面轮询延迟或 ECS 中途重启，也会在最新确认的截止点立即暂停座位；首次演练必须用 `systemctl status` 和实际到点冻结验证该 timer。
 
 北京式网页入口只负责回收源程序。选手必须在 NOI Linux 编辑器里保留、编译和自测代码，不应把唯一副本直接写在网页中。
 
@@ -262,12 +262,12 @@ sudo EXAM_URL=https://exam.example.test \
 1. Hydro 创建 OI 赛制测试比赛，加入 1 道题；先不要让测试账号报名，验证空名单也可按最大人数和备用数预热。
 2. 后台登记 `文件名=Hydro题号`。人工模式上传 PDF；AI 模式走完私有克隆预检、正式输入 hash、validator/oracle、报告预览和教师批准，确认批准前无法预热。
 3. 两个账号随后报名；确认只绑定既有已验收座位，T-5 前无密码、T-5 时收到可点击的 Hydro 原生消息且消息中没有裸 Markdown。
-4. 分别用 `web`、`folder`、`both` 模式演练，确认两个座位能登录且容器网络 `Internal=true`。
-5. 桌面打开“试题”确认 PDF 可见且只读；网页模式通过返回列表后再次提交的方式重复上传同一题 `.cpp`，确认两次明确递交生成不同 RID、最后一次有效，而同一次网络重试不重复建记录；文件夹模式检查官方目录树。
+4. 确认两个座位能登录且容器网络 `Internal=true`，正式目录均为 `考号/题目名/题目名.cpp`。
+5. 桌面打开 PDF 与辅助数据；同一题修改正式文件并递交两次，确认两次明确递交生成不同 RID、最后一次有效，而同一次网络重试不重复建记录。再修改文件但不递交，验证截止时补交最终版本。
 6. 一个账号正确提交；另一个故意漏写 freopen。教师账号在实时监控页确认每次递交实时从 Waiting 到终态。
 7. 在比赛仍进行时，用真实普通学生账号尝试查看提交记录、分数和排行榜，确认 OI 盲测生效；不能使用管理员账号代替这项验证。
 8. 增加一个座位并模拟一个桌面故障，验证已有映射不变、故障位暂停后切到备用位；再故障注入一次数据库提交失败，确认旧网关和旧桌面恢复。
-9. 到点或手动收卷，确认严格截止后不能再产生有效提交、网页最后一份复用已有 RID，再检查 `folder_report.json`、`web_report.json`、`selection.json`、`report.json`、`submit_log.json`、Hydro 记录和排行榜。
+9. 到点或提前结束，确认严格截止后不能再产生有效提交、最后相同源码复用既有 RID、不同最终源码只补交一次，再检查答案报告、选择凭据、送评日志、OJ 记录和排行榜。
 10. 确认错误提交为 0 分，比赛服务器进入停机不收费状态。
 
 正式办赛前必须完整通过以上流程。

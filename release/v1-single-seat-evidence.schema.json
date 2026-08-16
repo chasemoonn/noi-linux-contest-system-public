@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 verified single-seat evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "status", "session_id", "source", "components", "context", "checks", "ordinary_oj_isolation", "facts"],
+  "properties": {
+    "$schema": {"const": "v1-single-seat-evidence.schema.json"},
+    "schema_version": {"const": 1},
+    "status": {"const": "passed"},
+    "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "source": {"type": "object"},
+    "components": {"type": "object"},
+    "context": {"type": "object"},
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["materials", "desktop", "compile", "manual_submit", "cutoff_submit", "oj_record", "collection", "shutdown", "test_cleanup"],
+      "properties": {
+        "materials": {"const": true}, "desktop": {"const": true},
+        "compile": {"const": true}, "manual_submit": {"const": true},
+        "cutoff_submit": {"const": true}, "oj_record": {"const": true},
+        "collection": {"const": true}, "shutdown": {"const": true},
+        "test_cleanup": {"const": true}
+      }
+    },
+    "ordinary_oj_isolation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["errors", "restarts", "pid_changes", "pm2_fingerprint_sha256"],
+      "properties": {
+        "errors": {"const": 0}, "restarts": {"const": 0}, "pid_changes": {"const": 0},
+        "pm2_fingerprint_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "facts": {
+      "type": "array", "minItems": 9, "maxItems": 9,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["phase", "sha256"],
+        "properties": {
+          "phase": {"enum": ["materials", "desktop", "compile", "manual_submit", "cutoff_submit", "oj_record", "collection", "shutdown", "test_cleanup"]},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    }
+  }
+}

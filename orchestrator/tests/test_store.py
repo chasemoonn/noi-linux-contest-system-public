@@ -2,6 +2,7 @@ import tempfile
 from pathlib import Path
 import json
 import sqlite3
+import threading
 import unittest
 
 from services.store import (
@@ -20,6 +21,39 @@ class StoreTests(unittest.TestCase):
     def tearDown(self):
         self.store.close()
         self.temp.cleanup()
+
+    @staticmethod
+    def _material_publication(
+        tid,
+        revision,
+        *,
+        paper_sha256="3" * 64,
+        paper_size=123,
+        testdata_sha256="4" * 64,
+        testdata_size=456,
+    ):
+        receipt = {
+            "publication_id": "5" * 64,
+            "tid": tid,
+            "revision": revision,
+            "attachments": [
+                {
+                    "name": "01_比赛题面.pdf",
+                    "sha256": paper_sha256,
+                    "size": paper_size,
+                },
+                {
+                    "name": "02_辅助自测数据.tar.gz",
+                    "sha256": testdata_sha256,
+                    "size": testdata_size,
+                },
+            ],
+        }
+        return {
+            "ok": True,
+            **receipt,
+            "receipt_sha256": Store._canonical_json_sha256(receipt),
+        }
 
     def _put_released_pool(self, tid, seats):
         self.store.put_seat_pool(
@@ -57,6 +91,226 @@ class StoreTests(unittest.TestCase):
         self.store.upsert_contest(tid, "test", ["apple"], {"apple": "P1"})
         self.assertTrue(self.store.transition(tid, {"registered"}, "preparing"))
         self.assertFalse(self.store.transition(tid, {"registered"}, "preparing"))
+        events = self.store.audit_events(tid)
+        self.assertEqual(events[0]["action"], "contest.state.transition")
+        self.assertEqual(events[0]["details"]["to"], "preparing")
+
+    def test_active_seat_count_excludes_safely_ended_contests_and_deduplicates_container(self):
+        active_tid, ended_tid = "1" * 24, "2" * 24
+        self.store.upsert_contest(active_tid, "active", ["a"], {"a": "P1"})
+        self.store.upsert_contest(ended_tid, "ended", ["a"], {"a": "P1"})
+        self.store.set_state(active_tid, "ready")
+        self.store.set_state(ended_tid, "safe_ended")
+        for uid in (1, 2):
+            self.store.add_seat(
+                active_tid, uid, f"u{uid}", f"token{uid}", f"pass{uid}",
+                f"submit{uid}", f"candidate{uid}", "same-container", f"172.20.0.{uid}",
+            )
+        self.store.add_seat(
+            ended_tid, 3, "u3", "token3", "pass3", "submit3", "candidate3",
+            "ended-container", "172.20.0.3",
+        )
+        self.assertEqual(self.store.active_seat_count(), 1)
+
+    def test_audit_log_is_scoped_and_rejects_sensitive_fields(self):
+        tid = "e" * 24
+        other = "d" * 24
+        event_id = self.store.append_audit(
+            actor="teacher",
+            action="contest.materials.approve",
+            outcome="accepted",
+            tid=tid,
+            details={"revision": "r1", "practice_groups": 3},
+            created_at_ms=1234,
+        )
+        self.store.append_audit(
+            actor="system",
+            action="contest.state.set",
+            outcome="completed",
+            tid=other,
+            details={"state": "ready"},
+            created_at_ms=1235,
+        )
+
+        events = self.store.audit_events(tid)
+        self.assertEqual([item["id"] for item in events], [event_id])
+        self.assertEqual(
+            events[0]["details"], {"practice_groups": 3, "revision": "r1"}
+        )
+        self.assertNotIn("details_json", events[0])
+        with self.assertRaisesRegex(ValueError, "forbidden"):
+            self.store.append_audit(
+                actor="teacher",
+                action="contest.export",
+                outcome="completed",
+                tid=tid,
+                details={"submit_token": "must-not-be-stored"},
+            )
+
+    def test_startup_recovery_fails_preparing_closed_but_keeps_resumable_states(self):
+        preparing = "1" * 24
+        collecting = "2" * 24
+        safe_wait = "3" * 24
+        for tid, state in (
+            (preparing, "preparing"),
+            (collecting, "collecting"),
+            (safe_wait, "safe_wait"),
+        ):
+            self.store.upsert_contest(tid, state, ["apple"], {"apple": "P1"})
+            self.store.set_state(tid, state)
+
+        self.assertEqual(
+            self.store.recover_interrupted_contests(observed_at_ms=9000), 1
+        )
+
+        recovered = self.store.get_contest(preparing)
+        self.assertEqual(recovered["state"], "error")
+        self.assertIn("入口保持关闭", recovered["message"])
+        self.assertEqual(self.store.get_contest(collecting)["state"], "collecting")
+        self.assertEqual(self.store.get_contest(safe_wait)["state"], "safe_wait")
+        event = next(
+            item
+            for item in self.store.audit_events(preparing)
+            if item["action"] == "contest.recovery.prepare_interrupted"
+        )
+        self.assertEqual(event["outcome"], "failed")
+
+    def test_schedule_and_pool_release_boundary_commit_atomically(self):
+        tid = "f" * 24
+        self.store.upsert_contest(
+            tid,
+            "time sync",
+            ["apple"],
+            {"apple": "P1"},
+            begin_at_ms=2_000_000,
+            end_at_ms=3_000_000,
+            hydro_rule="oi",
+        )
+        self.store.set_state(tid, "ready")
+        state = {
+            "schema_version": 1,
+            "tid": tid,
+            "max_participants": 0,
+            "spare_count": 2,
+            "begin_at_ms": 2_000_000,
+            "release_at_ms": 1_700_000,
+            "revision": 1,
+            "seats": [],
+            "receipts": [],
+        }
+        self.store.put_seat_pool(tid, None, state)
+        changed = {
+            **state,
+            "begin_at_ms": 2_600_000,
+            "release_at_ms": 2_300_000,
+            "revision": 2,
+        }
+
+        updated = self.store.commit_schedule_sync(
+            tid,
+            expected_begin_at_ms=2_000_000,
+            expected_end_at_ms=3_000_000,
+            begin_at_ms=2_600_000,
+            end_at_ms=3_600_000,
+            hydro_rule="oi",
+            observed_at_ms=1_900_000,
+            expected_pool_revision=1,
+            pool_state=changed,
+        )
+
+        self.assertEqual(updated["begin_at_ms"], 2_600_000)
+        self.assertEqual(updated["end_at_ms"], 3_600_000)
+        self.assertEqual(updated["time_sync_at_ms"], 1_900_000)
+        self.assertEqual(updated["time_sync_error"], "")
+        persisted = self.store.seat_pool(tid)
+        self.assertEqual(persisted["revision"], 2)
+        self.assertEqual(persisted["state"]["release_at_ms"], 2_300_000)
+
+    def test_failed_schedule_commit_leaves_contest_and_pool_unchanged(self):
+        tid = "e" * 24
+        self.store.upsert_contest(
+            tid,
+            "time sync conflict",
+            ["apple"],
+            {"apple": "P1"},
+            begin_at_ms=2_000_000,
+            end_at_ms=3_000_000,
+            hydro_rule="oi",
+        )
+        self.store.set_state(tid, "ready")
+        state = {
+            "schema_version": 1,
+            "tid": tid,
+            "max_participants": 0,
+            "spare_count": 2,
+            "begin_at_ms": 2_000_000,
+            "release_at_ms": 1_700_000,
+            "revision": 4,
+            "seats": [],
+            "receipts": [],
+        }
+        self.store.put_seat_pool(tid, None, state)
+        changed = {**state, "begin_at_ms": 2_600_000, "revision": 5}
+
+        with self.assertRaises(SubmissionConflictError):
+            self.store.commit_schedule_sync(
+                tid,
+                expected_begin_at_ms=2_000_000,
+                expected_end_at_ms=3_000_000,
+                begin_at_ms=2_600_000,
+                end_at_ms=3_600_000,
+                hydro_rule="oi",
+                observed_at_ms=1_900_000,
+                expected_pool_revision=3,
+                pool_state=changed,
+            )
+
+        self.assertEqual(self.store.get_contest(tid)["begin_at_ms"], 2_000_000)
+        self.assertEqual(self.store.seat_pool(tid)["revision"], 4)
+
+    def test_time_sync_error_preserves_last_successful_sync(self):
+        tid = "d" * 24
+        self.store.upsert_contest(tid, "sync status", ["apple"], {"apple": "P1"})
+        self.store.mark_time_sync(tid, observed_at_ms=1000, error="")
+        self.store.mark_time_sync(tid, observed_at_ms=2000, error="OJ timeout")
+
+        contest = self.store.get_contest(tid)
+        self.assertEqual(contest["time_sync_at_ms"], 1000)
+        self.assertEqual(contest["time_sync_checked_at_ms"], 2000)
+        self.assertEqual(contest["time_sync_error"], "OJ timeout")
+
+    def test_safe_wait_requires_durable_evidence_and_delayed_end(self):
+        tid = "c" * 24
+        self.store.upsert_contest(tid, "safe wait", ["apple"], {"apple": "P1"})
+        self.store.set_state(tid, "collecting")
+
+        self.assertTrue(
+            self.store.enter_safe_wait(
+                tid,
+                run_id="20260811T080000Z",
+                collection_dir="/archive/contest/run",
+                receipt_sha256="a" * 64,
+                completed_at_ms=1_000,
+                shutdown_after_ms=2_000,
+                message="waiting",
+            )
+        )
+        contest = self.store.get_contest(tid)
+        self.assertEqual(contest["state"], "safe_wait")
+        self.assertEqual(contest["collection_receipt_sha256"], "a" * 64)
+        self.assertFalse(
+            self.store.mark_safe_ended(
+                tid, observed_at_ms=1_999, message="too early"
+            )
+        )
+        self.assertTrue(
+            self.store.mark_safe_ended(
+                tid, observed_at_ms=2_000, message="verified"
+            )
+        )
+        ended = self.store.get_contest(tid)
+        self.assertEqual(ended["state"], "safe_ended")
+        self.assertEqual(ended["shutdown_verified_at_ms"], 2_000)
 
     def test_upsert_resets_failed_contest(self):
         tid = "1" * 24
@@ -113,6 +367,78 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.seat_by_gateway_token("token")["uid"], 7)
         self.assertEqual(self.store.seat_by_submit_token("submit-token")["uid"], 7)
 
+    def test_contest_notification_health_is_scoped_and_non_sensitive(self):
+        tid = "7" * 24
+        other = "6" * 24
+        self.store.upsert_contest(tid, "notifications", ["a"])
+        self.store.upsert_contest(other, "other", ["a"])
+        self.store.queue_seat_notification(
+            tid,
+            7,
+            "seat_ready",
+            1,
+            "a" * 64,
+        )
+        self.store.queue_seat_notification(
+            other,
+            8,
+            "seat_ready",
+            1,
+            "b" * 64,
+        )
+        self.store.mark_seat_notification("a" * 64, sent=True)
+
+        health = self.store.contest_notification_health(tid)
+
+        self.assertEqual(health["counts"]["sent"], 1)
+        self.assertEqual(health["counts"]["pending"], 0)
+        self.assertTrue(health["safe"])
+        self.assertNotIn("notification_id", health)
+
+    def test_teacher_retry_requeues_only_current_failed_credentials(self):
+        tid = "5" * 24
+        self.store.upsert_contest(tid, "retry notifications", ["a"])
+        self.store.set_state(tid, "ready")
+        self._put_released_pool(tid, [(1, 7), (2, 8)])
+        self._put_pool_resource(tid, 1, credential_revision=2)
+        self._put_pool_resource(tid, 2, credential_revision=1)
+        self.store.queue_seat_notification(tid, 7, "seat_ready", 1, "a" * 64)
+        self.store.mark_seat_notification(
+            "a" * 64, sent=False, retryable=False, error="old failure"
+        )
+        current = self.store.queue_seat_notification(
+            tid, 7, "seat_ready", 2, "b" * 64
+        )
+        self.store.mark_seat_notification(
+            "b" * 64, sent=False, retryable=False, error="current failure"
+        )
+        sent = self.store.queue_seat_notification(
+            tid, 8, "seat_ready", 1, "c" * 64
+        )
+        self.store.mark_seat_notification("c" * 64, sent=True)
+
+        self.assertEqual(self.store.retry_failed_seat_notifications(tid), 1)
+        self.assertEqual(self.store.retry_failed_seat_notifications(tid), 0)
+
+        rows = {
+            row["notification_id"]: row
+            for row in self.store.pending_seat_notifications(tid)
+        }
+        self.assertEqual(rows["a" * 64]["state"], "permanent_failed")
+        self.assertEqual(rows[current["notification_id"]]["state"], "pending")
+        self.assertNotIn(sent["notification_id"], rows)
+        self.assertEqual(rows[current["notification_id"]]["attempts"], 1)
+        self.assertEqual(rows[current["notification_id"]]["last_error"], "")
+
+    def test_teacher_retry_requires_ready_contest_and_valid_pool(self):
+        tid = "4" * 24
+        self.store.upsert_contest(tid, "retry guard", ["a"])
+        with self.assertRaises(SubmissionConflictError):
+            self.store.retry_failed_seat_notifications(tid)
+        self.store.set_state(tid, "ready")
+        with self.assertRaises(SubmissionConflictError):
+            self.store.retry_failed_seat_notifications(tid)
+
     def test_artifact_approval_freezes_hashes(self):
         tid = "a" * 24
         self.store.upsert_contest(
@@ -140,13 +466,26 @@ class StoreTests(unittest.TestCase):
             testdata_files=6,
             testdata_expanded_size=789,
         )
-        approved = self.store.approve_artifact(tid, "r1", "teacher")
+        publication = self._material_publication(tid, "r1")
+        approved = self.store.approve_artifact_with_publication(
+            tid, "r1", "teacher", publication
+        )
         contest = self.store.get_contest(tid)
         self.assertEqual(approved["state"], "approved")
         self.assertEqual(contest["material_state"], "approved")
         self.assertEqual(contest["active_material_revision"], "r1")
         self.assertEqual(contest["paper_sha256"], "3" * 64)
         self.assertEqual(contest["testdata_files"], 6)
+        self.assertEqual(
+            self.store.material_publication(tid, "r1")["receipt_sha256"],
+            publication["receipt_sha256"],
+        )
+
+        # An identical approval retry is idempotent and retains one receipt.
+        retried = self.store.approve_artifact_with_publication(
+            tid, "r1", "teacher-2", publication
+        )
+        self.assertEqual(retried["approved_by"], "teacher")
 
         # Identical persistence retry is harmless, but immutable bytes cannot
         # be replaced and an approved row is never demoted.
@@ -186,6 +525,45 @@ class StoreTests(unittest.TestCase):
                 testdata_files=6,
                 testdata_expanded_size=789,
             )
+
+    def test_artifact_approval_rejects_material_receipt_byte_mismatch(self):
+        tid = "8" * 24
+        self.store.upsert_contest(
+            tid,
+            "receipt mismatch",
+            ["apple"],
+            {"apple": "P1"},
+            materials_mode="ai",
+        )
+        self.store.put_artifact_revision(
+            tid,
+            "r1",
+            state="review",
+            source_sha256="1" * 64,
+            root_path="/artifacts/r1",
+            manifest_sha256="2" * 64,
+            paper_name="paper.pdf",
+            paper_sha256="3" * 64,
+            paper_size=123,
+            testdata_name="testdata.tar.gz",
+            testdata_sha256="4" * 64,
+            testdata_size=456,
+            testdata_files=6,
+            testdata_expanded_size=789,
+        )
+        publication = self._material_publication(
+            tid,
+            "r1",
+            paper_sha256="9" * 64,
+        )
+
+        with self.assertRaisesRegex(SubmissionConflictError, "字节摘要"):
+            self.store.approve_artifact_with_publication(
+                tid, "r1", "teacher", publication
+            )
+
+        self.assertEqual(self.store.artifact_revision(tid, "r1")["state"], "review")
+        self.assertIsNone(self.store.material_publication(tid, "r1"))
 
     def test_draft_artifact_cannot_be_approved_before_machine_review(self):
         tid = "9" * 24
@@ -602,6 +980,124 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual(health["counts"]["retry"], 1)
         self.assertEqual(health["oldest_waiting_ms"], 60_000)
+
+    def test_ambiguous_submission_blocks_health_and_final_requeue(self):
+        tid = "7" * 24
+        self.store.upsert_contest(tid, "test", ["apple"], {"apple": "P1"})
+        row = self._enqueue(tid, "ambiguous", submission_id="7" * 64)
+        claimed = self.store.claim_next_web_submission(now=100)
+        ambiguous = self.store.mark_web_submission_failed(
+            row["id"],
+            claimed["lease_token"],
+            "unknown OJ insert",
+            retry_at=None,
+            ambiguous=True,
+        )
+
+        self.assertEqual(ambiguous["judge_state"], "ambiguous")
+        self.assertIsNone(self.store.claim_next_web_submission(now=200))
+        self.assertEqual(
+            self.store.requeue_web_submission_for_final(row["id"])["judge_state"],
+            "ambiguous",
+        )
+        self.assertEqual(self.store.realtime_queue_health()["counts"]["ambiguous"], 1)
+        health = self.store.contest_delivery_health(tid)
+        self.assertEqual(health["counts"]["ambiguous"], 1)
+        self.assertFalse(health["safe"])
+
+    def test_ambiguous_resolution_claim_is_rate_limited_and_exact(self):
+        tid = "8" * 24
+        self.store.upsert_contest(tid, "test", ["apple"], {"apple": "P1"})
+        row = self._enqueue(tid, "resolve", submission_id="8" * 64)
+        delivery = self.store.claim_next_web_submission(now=100)
+        self.store.mark_web_submission_failed(
+            row["id"],
+            delivery["lease_token"],
+            "unknown OJ insert",
+            retry_at=None,
+            ambiguous=True,
+            resolution_after=102,
+        )
+        self.assertIsNone(self.store.claim_ambiguous_web_submission(now=101))
+        claimed = self.store.claim_ambiguous_web_submission(
+            now=102, check_seconds=30
+        )
+        self.assertEqual(claimed["resolution_attempts"], 1)
+        self.assertEqual(claimed["resolution_after"], 132)
+        self.assertIsNone(self.store.claim_ambiguous_web_submission(now=102))
+
+        unresolved = self.store.finish_ambiguous_web_submission(
+            row["id"], "8" * 64, resolution_status="multiple", now=103
+        )
+        self.assertEqual(unresolved["judge_state"], "ambiguous")
+        self.assertEqual(unresolved["last_error"], "OJ 只读核对：multiple")
+        resolved = self.store.finish_ambiguous_web_submission(
+            row["id"], "8" * 64, rid="c" * 24, now=133
+        )
+        self.assertEqual(resolved["judge_state"], "submitted")
+        self.assertEqual(resolved["rid"], "c" * 24)
+        self.assertEqual(resolved["last_error"], "")
+
+    def test_ambiguous_resolution_rejects_wrong_submission_identity(self):
+        tid = "9" * 24
+        self.store.upsert_contest(tid, "test", ["apple"], {"apple": "P1"})
+        row = self._enqueue(tid, "resolve", submission_id="9" * 64)
+        delivery = self.store.claim_next_web_submission(now=100)
+        self.store.mark_web_submission_failed(
+            row["id"], delivery["lease_token"], "unknown", retry_at=None,
+            ambiguous=True,
+        )
+        with self.assertRaisesRegex(Exception, "state changed"):
+            self.store.finish_ambiguous_web_submission(
+                row["id"], "a" * 64, rid="d" * 24, now=101
+            )
+
+    def test_ambiguous_resolution_claim_is_single_owner_across_store_connections(self):
+        tid = "a" * 24
+        self.store.upsert_contest(tid, "test", ["apple"], {"apple": "P1"})
+        row = self._enqueue(tid, "cross-process", submission_id="b" * 64)
+        delivery = self.store.claim_next_web_submission(now=100)
+        self.store.mark_web_submission_failed(
+            row["id"],
+            delivery["lease_token"],
+            "unknown OJ insert",
+            retry_at=None,
+            ambiguous=True,
+            resolution_after=102,
+        )
+        second = Store(str(Path(self.temp.name) / "state.db"))
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def claim(store):
+            try:
+                barrier.wait(timeout=5)
+                results.append(
+                    store.claim_ambiguous_web_submission(
+                        now=102, check_seconds=30
+                    )
+                )
+            except Exception as exc:  # surfaced below with the original detail
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=claim, args=(self.store,)),
+            threading.Thread(target=claim, args=(second,)),
+        ]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            claimed = [item for item in results if item is not None]
+            self.assertEqual(len(claimed), 1)
+            self.assertEqual(claimed[0]["id"], row["id"])
+            self.assertEqual(claimed[0]["resolution_attempts"], 1)
+        finally:
+            second.close()
 
     def test_realtime_enqueue_enforces_frozen_window_atomically(self):
         tid = "f" * 24

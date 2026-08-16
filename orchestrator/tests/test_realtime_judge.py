@@ -5,7 +5,7 @@ import unittest
 from unittest import mock
 
 from services.hydro_submit import HydroSubmitter
-from services.realtime_judge import RealtimeJudge
+from services.realtime_judge import RealtimeJudge, RealtimeJudgeAmbiguousError
 from services.store import Store
 
 
@@ -23,10 +23,12 @@ class FakeClock:
 class FakeSubmitter:
     realtime_submission_id = staticmethod(HydroSubmitter.realtime_submission_id)
 
-    def __init__(self, results, lang="cc"):
+    def __init__(self, results, lang="cc", resolution_results=()):
         self.lang = lang
         self.results = list(results)
         self.calls = []
+        self.resolution_results = list(resolution_results)
+        self.resolution_calls = []
 
     def submit_one(
         self,
@@ -53,6 +55,10 @@ class FakeSubmitter:
             }
         )
         return self.results.pop(0)
+
+    def resolve_submission(self, submission_id):
+        self.resolution_calls.append(submission_id)
+        return self.resolution_results.pop(0)
 
 
 class RealtimeJudgeTests(unittest.TestCase):
@@ -155,6 +161,163 @@ class RealtimeJudgeTests(unittest.TestCase):
             submitter.calls[0]["submission_id"], submitter.calls[1]["submission_id"]
         )
         self.assertEqual(submitter.calls[0]["code"], submitter.calls[1]["code"])
+
+    def test_ambiguous_result_is_persisted_and_never_claimed_again(self):
+        judge, submitter = self.make_judge(
+            [
+                {
+                    "ok": False,
+                    "retryable": False,
+                    "ambiguous": True,
+                    "status_code": 409,
+                    "error": {
+                        "error": {"name": "OrchestratorSubmissionAmbiguousError"}
+                    },
+                }
+            ]
+        )
+        queued = self.enqueue(judge, "ambiguous-nonce")
+
+        result = judge.process_once()
+
+        self.assertEqual(result["judge_state"], "ambiguous")
+        self.assertEqual(len(submitter.calls), 1)
+
+    def test_ambiguous_result_is_resolved_only_by_exact_read_only_rid(self):
+        submitter = FakeSubmitter(
+            [{"ok": False, "retryable": False, "ambiguous": True}],
+            resolution_results=[{"ok": True, "status": "resolved", "rid": "c" * 24}],
+        )
+        judge = RealtimeJudge(
+            self.store, submitter, clock=self.clock, sleeper=self.clock.sleep
+        )
+        queued = self.enqueue(judge, "resolve-nonce")
+        ambiguous = judge.process_once()
+        self.assertEqual(ambiguous["judge_state"], "ambiguous")
+        self.assertIsNone(judge.resolve_ambiguous_once())
+
+        self.clock.value += 2
+        resolved = judge.resolve_ambiguous_once()
+
+        self.assertEqual(resolved["judge_state"], "submitted")
+        self.assertEqual(resolved["rid"], "c" * 24)
+        self.assertEqual(submitter.resolution_calls, [queued["submission_id"]])
+        self.assertEqual(len(submitter.calls), 1)
+
+    def test_non_unique_resolution_stays_ambiguous_and_is_rate_limited(self):
+        submitter = FakeSubmitter(
+            [{"ok": False, "retryable": False, "ambiguous": True}],
+            resolution_results=[{"ok": False, "status": "multiple"}],
+        )
+        judge = RealtimeJudge(
+            self.store, submitter, clock=self.clock, sleeper=self.clock.sleep
+        )
+        queued = self.enqueue(judge, "multiple-nonce")
+        judge.process_once()
+        self.clock.value += 2
+
+        checked = judge.resolve_ambiguous_once()
+
+        self.assertEqual(checked["judge_state"], "ambiguous")
+        self.assertEqual(checked["last_error"], "OJ 只读核对：multiple")
+        self.assertEqual(checked["resolution_attempts"], 1)
+        self.assertIsNone(judge.resolve_ambiguous_once())
+        self.assertEqual(submitter.resolution_calls, [queued["submission_id"]])
+        self.assertIsNone(judge.process_once())
+        with self.assertRaisesRegex(RealtimeJudgeAmbiguousError, "禁止自动重发"):
+            judge.ensure_submitted(queued["id"])
+        self.assertEqual(len(submitter.calls), 1)
+
+    def test_controller_restart_resolves_persisted_ambiguous_submission(self):
+        first_submitter = FakeSubmitter(
+            [{"ok": False, "retryable": False, "ambiguous": True}]
+        )
+        first_judge = RealtimeJudge(
+            self.store, first_submitter, clock=self.clock, sleeper=self.clock.sleep
+        )
+        queued = self.enqueue(first_judge, "controller-restart")
+        ambiguous = first_judge.process_once()
+        self.assertEqual(ambiguous["judge_state"], "ambiguous")
+        self.clock.value += 2
+
+        self.store.close()
+        self.store = Store(str(Path(self.temp.name) / "state.db"))
+        restarted_submitter = FakeSubmitter(
+            [],
+            resolution_results=[
+                {"ok": True, "status": "resolved", "rid": "d" * 24}
+            ],
+        )
+        restarted_judge = RealtimeJudge(
+            self.store,
+            restarted_submitter,
+            clock=self.clock,
+            sleeper=self.clock.sleep,
+        )
+
+        resolved = restarted_judge.resolve_ambiguous_once()
+
+        self.assertEqual(resolved["judge_state"], "submitted")
+        self.assertEqual(resolved["rid"], "d" * 24)
+        self.assertEqual(restarted_submitter.calls, [])
+        self.assertEqual(
+            restarted_submitter.resolution_calls, [queued["submission_id"]]
+        )
+
+    def test_resolution_network_failure_survives_restart_without_replay(self):
+        first_submitter = FakeSubmitter(
+            [{"ok": False, "retryable": False, "ambiguous": True}]
+        )
+        first_judge = RealtimeJudge(
+            self.store, first_submitter, clock=self.clock, sleeper=self.clock.sleep
+        )
+        queued = self.enqueue(first_judge, "resolution-network-failure")
+        first_judge.process_once()
+        self.clock.value += 2
+
+        class FailingResolver(FakeSubmitter):
+            def resolve_submission(self, submission_id):
+                self.resolution_calls.append(submission_id)
+                raise OSError("status endpoint unavailable")
+
+        failing_submitter = FailingResolver([])
+        failing_judge = RealtimeJudge(
+            self.store,
+            failing_submitter,
+            clock=self.clock,
+            sleeper=self.clock.sleep,
+        )
+        with self.assertRaisesRegex(OSError, "status endpoint unavailable"):
+            failing_judge.resolve_ambiguous_once()
+        persisted = self.store.get_web_submission(queued["id"])
+        self.assertEqual(persisted["judge_state"], "ambiguous")
+        self.assertEqual(persisted["resolution_attempts"], 1)
+        self.assertEqual(len(first_submitter.calls), 1)
+
+        self.store.close()
+        self.store = Store(str(Path(self.temp.name) / "state.db"))
+        self.clock.value = persisted["resolution_after"]
+        recovered_submitter = FakeSubmitter(
+            [],
+            resolution_results=[
+                {"ok": True, "status": "resolved", "rid": "e" * 24}
+            ],
+        )
+        recovered_judge = RealtimeJudge(
+            self.store,
+            recovered_submitter,
+            clock=self.clock,
+            sleeper=self.clock.sleep,
+        )
+
+        resolved = recovered_judge.resolve_ambiguous_once()
+
+        self.assertEqual(resolved["judge_state"], "submitted")
+        self.assertEqual(resolved["rid"], "e" * 24)
+        self.assertEqual(recovered_submitter.calls, [])
+        self.assertEqual(
+            recovered_submitter.resolution_calls, [queued["submission_id"]]
+        )
 
     def test_ensure_submitted_processes_older_lane_rows_first(self):
         judge, submitter = self.make_judge(

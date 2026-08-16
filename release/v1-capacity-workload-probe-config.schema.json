@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 capacity workload evidence probe configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "qualification_marker", "seat_set_sha256", "database_path", "contest_id", "submission_session", "problem_slugs", "seat_bindings", "action_envelope", "action_receipt", "action_agent_sha256", "action_signer", "action_public_key", "action_max_age_seconds", "ssh_keygen_path", "capacity_session_dir"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "seat_set_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "database_path": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "contest_id": {"type": "string", "pattern": "^[a-f0-9]{24}$"},
+    "submission_session": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "problem_slugs": {
+      "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"}
+    },
+    "seat_bindings": {
+      "type": "array", "minItems": 15, "maxItems": 15,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["slot_no", "uid", "candidate"],
+        "properties": {
+          "slot_no": {"type": "integer", "minimum": 1, "maximum": 15},
+          "uid": {"type": "integer", "minimum": 1},
+          "candidate": {"type": "string", "pattern": "^[0-9]{12}$"}
+        }
+      }
+    },
+    "action_envelope": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "action_receipt": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "action_agent_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "action_signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
+    "action_public_key": {"type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]{40,160}( [^\\r\\n]{1,120})?$"},
+    "action_max_age_seconds": {"type": "integer", "minimum": 1, "maximum": 7200},
+    "ssh_keygen_path": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "capacity_session_dir": {"type": "string", "pattern": "^/[^\\u0000]+$"}
+  }
+}

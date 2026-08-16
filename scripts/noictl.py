@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""First read-only noictl commands.
+"""NOI Linux V1 diagnostic, planning, and transaction entry point.
 
 This module intentionally imports no cloud, HTTP, SSH, database, Docker, or
-process-management client.  The only command that writes is support-bundle,
-and it writes one explicitly named local JSON artifact.
+service-management client.  Production install planning may invoke the frozen
+read-only candidate verifier, which in turn uses ssh-keygen for signatures.
+The install apply command delegates only to the root-owned, SHA-pinned V1
+transaction executor; no service mutation is implemented directly here.
 """
 from __future__ import annotations
 
@@ -16,12 +18,16 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import math
 import os
 from pathlib import Path
 import re
 import stat
+import subprocess
+import tarfile
+import tempfile
 from typing import Any, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +100,7 @@ _SAFE_LEAF_KEYS = {
     "executable",
     "frame_rate",
     "gateway_listen",
+    "gateway_bind_address",
     "gateway_scheme",
     "host_key_sha256",
     "max_input_bytes",
@@ -129,6 +136,7 @@ _SAFE_LEAF_KEYS = {
     "seats_root",
     "shm_size",
     "shutdown_on_collect_error",
+    "shutdown_grace_minutes",
     "shutdown_on_prepare_error",
     "snippet_path",
     "strict_host_key",
@@ -158,6 +166,7 @@ _TOPOLOGY_KEYS = {
     "docker_image",
     "docker_network",
     "gateway_listen",
+    "gateway_bind_address",
     "host_key_sha256",
     "port",
     "region",
@@ -225,6 +234,14 @@ class NoictlArgumentParser(argparse.ArgumentParser):
 
 class UnsafeOutputError(Exception):
     """A payload still appears to contain a value that must be redacted."""
+
+
+class InstallPlanError(Exception):
+    """A candidate cannot safely produce an installation plan."""
+
+
+class InstallQualificationError(InstallPlanError):
+    """A candidate failed complete production-qualification reverification."""
 
 
 @dataclass
@@ -880,6 +897,427 @@ def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _safe_candidate_file(path: Path, *, maximum: int) -> bytes:
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        raise InstallPlanError("candidate file is missing or unreadable") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise InstallPlanError("candidate file is not a regular file")
+    if metadata.st_size <= 0 or metadata.st_size > maximum:
+        raise InstallPlanError("candidate file size is invalid")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size != metadata.st_size:
+            raise InstallPlanError("candidate file changed during open")
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise InstallPlanError("candidate file identity changed during open")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            raw = handle.read(maximum + 1)
+        if len(raw) != opened.st_size:
+            raise InstallPlanError("candidate file changed during read")
+        return raw
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _run_trusted_candidate_verifier(
+    candidate: Path, archive_raw: bytes, environment: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run only the verifier whose bytes came from the already verified archive."""
+    with tempfile.TemporaryDirectory(prefix="noi-v1-candidate-verifier-") as raw:
+        trusted_root = Path(raw)
+        with tarfile.open(fileobj=io.BytesIO(archive_raw), mode="r:") as bundle:
+            for member in bundle.getmembers():
+                if not member.isfile():
+                    continue
+                handle = bundle.extractfile(member)
+                if handle is None:
+                    raise InstallQualificationError(
+                        "trusted production verifier archive is unreadable"
+                    )
+                target = trusted_root / member.name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("xb") as output:
+                    output.write(handle.read())
+                target.chmod(member.mode & 0o777)
+        source_root = trusted_root / "noi-linux-contest-system-v1"
+        verifier = source_root / "scripts" / "verify_v1_candidate.py"
+        if not verifier.is_file() or verifier.is_symlink():
+            raise InstallQualificationError(
+                "trusted production candidate verifier is missing"
+            )
+        return subprocess.run(
+            [sys.executable, str(verifier), str(candidate.resolve()),
+             "--require-production-qualified"],
+            cwd=source_root, env=environment, capture_output=True, text=True,
+            timeout=120, check=False,
+        )
+
+
+def _verify_install_candidate(
+    candidate_argument: str, *, require_production_qualified: bool = False
+) -> dict[str, Any]:
+    candidate = Path(candidate_argument).expanduser()
+    try:
+        metadata = os.lstat(candidate)
+    except OSError as exc:
+        raise InstallPlanError("candidate directory is missing or unreadable") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise InstallPlanError("candidate must be a real directory")
+    manifest_raw = _safe_candidate_file(
+        candidate / "candidate-manifest.json", maximum=32 * 1024 * 1024
+    )
+    try:
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InstallPlanError("candidate manifest is not strict UTF-8 JSON") from exc
+    if not isinstance(manifest, dict) or set(manifest) != {
+        "$schema", "schema_version", "candidate", "source", "static_gates", "qualification"
+    }:
+        raise InstallPlanError("candidate manifest shape differs")
+    if manifest["$schema"] != "v1-source-candidate.schema.json" or manifest["schema_version"] != 1:
+        raise InstallPlanError("candidate manifest schema differs")
+    identity = manifest.get("candidate")
+    if not isinstance(identity, dict) or identity.get("profile") != SUPPORTED_PROFILE \
+            or identity.get("product_contract") != "NOI Linux V1":
+        raise InstallPlanError("candidate identity differs")
+    if manifest.get("static_gates") != {
+        "submission_fault_injection": "passed",
+        "v1_product_contract": "passed",
+        "public_release_boundary": "passed",
+    }:
+        raise InstallPlanError("candidate static gates are not passed")
+    source_row = manifest.get("source")
+    if not isinstance(source_row, dict) or set(source_row) != {
+        "revision", "tree", "archive", "tracked_file_count", "files"
+    }:
+        raise InstallPlanError("candidate source shape differs")
+    if not re.fullmatch(r"[a-f0-9]{40}", str(source_row["revision"])) or \
+            not re.fullmatch(r"[a-f0-9]{40}", str(source_row["tree"])):
+        raise InstallPlanError("candidate source identity is invalid")
+    files = source_row.get("files")
+    if not isinstance(files, list) or not files or source_row.get("tracked_file_count") != len(files):
+        raise InstallPlanError("candidate file manifest is invalid")
+    expected: dict[str, dict[str, Any]] = {}
+    expected_directories = {"noi-linux-contest-system-v1"}
+    for row in files:
+        if not isinstance(row, dict) or set(row) != {"path", "mode", "bytes", "sha256"}:
+            raise InstallPlanError("candidate file row differs")
+        path = row["path"]
+        if not isinstance(path, str) or not path or "\\" in path or path.startswith("/") \
+                or any(part in {"", ".", ".."} for part in path.split("/")):
+            raise InstallPlanError("candidate contains an unsafe source path")
+        if path in expected or row["mode"] not in {"100644", "100755"} \
+                or not isinstance(row["bytes"], int) or row["bytes"] < 0 \
+                or not re.fullmatch(r"[a-f0-9]{64}", str(row["sha256"])):
+            raise InstallPlanError("candidate file metadata is invalid")
+        expected[f"noi-linux-contest-system-v1/{path}"] = row
+        parent = Path(f"noi-linux-contest-system-v1/{path}").parent
+        while str(parent) not in {"", "."}:
+            expected_directories.add(parent.as_posix())
+            parent = parent.parent
+    archive_row = source_row.get("archive")
+    if not isinstance(archive_row, dict) or set(archive_row) != {"name", "sha256", "bytes", "root"} \
+            or archive_row.get("root") != "noi-linux-contest-system-v1/":
+        raise InstallPlanError("candidate archive metadata differs")
+    archive_name = archive_row.get("name")
+    if not isinstance(archive_name, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.tar", archive_name):
+        raise InstallPlanError("candidate archive name is unsafe")
+    archive_raw = _safe_candidate_file(candidate / archive_name, maximum=256 * 1024 * 1024)
+    if len(archive_raw) != archive_row.get("bytes") or _sha256_bytes(archive_raw) != archive_row.get("sha256"):
+        raise InstallPlanError("candidate archive digest differs")
+    observed: set[str] = set()
+    try:
+        import io
+        with tarfile.open(fileobj=io.BytesIO(archive_raw), mode="r:") as bundle:
+            for member in bundle.getmembers():
+                if member.isdir():
+                    if member.name.rstrip("/") not in expected_directories:
+                        raise InstallPlanError("candidate archive contains an unexpected directory")
+                    continue
+                if not member.isfile() or member.issym() or member.islnk() or member.name not in expected:
+                    raise InstallPlanError("candidate archive contains an unexpected entry")
+                if member.name in observed:
+                    raise InstallPlanError("candidate archive contains a duplicate entry")
+                handle = bundle.extractfile(member)
+                content = handle.read() if handle is not None else b""
+                row = expected[member.name]
+                expected_mode = 0o755 if row["mode"] == "100755" else 0o644
+                if len(content) != row["bytes"] or _sha256_bytes(content) != row["sha256"] \
+                        or member.mode & 0o777 != expected_mode:
+                    raise InstallPlanError("candidate archive member differs")
+                observed.add(member.name)
+    except (tarfile.TarError, OSError) as exc:
+        raise InstallPlanError("candidate archive is invalid") from exc
+    if observed != set(expected):
+        raise InstallPlanError("candidate archive is incomplete")
+    qualification = manifest.get("qualification")
+    if not isinstance(qualification, dict) or not isinstance(
+        qualification.get("production_qualified"), bool
+    ):
+        raise InstallPlanError("candidate qualification metadata differs")
+    verified = {
+        "revision": source_row["revision"], "tree": source_row["tree"],
+        "archive_sha256": archive_row["sha256"],
+        "manifest_sha256": _sha256_bytes(manifest_raw),
+        "production_qualified": qualification["production_qualified"],
+    }
+    if require_production_qualified:
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+        }
+        try:
+            completed = _run_trusted_candidate_verifier(
+                candidate, archive_raw, environment
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise InstallQualificationError(
+                "production candidate reverification could not complete"
+            ) from exc
+        if completed.returncode != 0:
+            raise InstallQualificationError("production qualification reverification failed")
+        try:
+            result = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise InstallQualificationError(
+                "production qualification verifier output is invalid"
+            ) from exc
+        expected_result = {
+            "status": "qualified",
+            "revision": verified["revision"],
+            "archive_sha256": verified["archive_sha256"],
+            "manifest_sha256": verified["manifest_sha256"],
+        }
+        if result != expected_result:
+            raise InstallQualificationError(
+                "production qualification verifier identity differs"
+            )
+        verified["production_qualified"] = True
+    return verified
+
+
+def _installation_config_binding(state: ConfigState) -> str:
+    # A public plan_id must not become an offline oracle for a domain, IP,
+    # instance ID, private path, user name, or secret.  The eventual apply
+    # command must persist the exact private binding in a root-only plan file;
+    # this public plan binds only the redacted contract shape.
+    redacted, _, _ = _redact_config(state)
+    raw = json.dumps(redacted, ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return _sha256_bytes(raw)
+
+
+def _install_plan(
+    config_path: Path, candidate: str, qualification_lab: bool,
+    expected_manifest_sha256: str,
+) -> tuple[dict[str, Any], int]:
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_manifest_sha256):
+        result = _base_result("install --plan", "error", "外部候选摘要格式无效")
+        result["checks"] = [_check("INSTALL_EXTERNAL_MANIFEST_PIN", "fail", "candidate",
+            "必须从独立可信通道提供 64 位小写 manifest SHA256", {"external_pin_valid": False},
+            "重新获取发布方公布的 candidate-manifest.json SHA256")]
+        return result, 2
+    if _runtime_system() != "Linux":
+        result = _base_result("install --plan", "error", "安装计划只能在目标 Linux 主机生成")
+        result["checks"] = [_check("INSTALL_TARGET_LINUX", "fail", "local",
+            "当前不是目标 Linux 主机", {"target_linux": False}, "请在目标 Ubuntu 主机重新生成计划")]
+        return result, 3
+    doctor, doctor_code, state = _doctor(config_path)
+    if doctor_code != 0 or state is None:
+        result = _base_result("install --plan", "error", "静态配置门未通过，未生成安装计划")
+        result["checks"] = doctor["checks"]
+        return result, doctor_code
+    try:
+        candidate_row = _verify_install_candidate(
+            candidate, require_production_qualified=not qualification_lab
+        )
+    except InstallQualificationError:
+        result = _base_result("install --plan", "refused", "候选未通过完整生产资格重验")
+        result["checks"] = [_check("INSTALL_PRODUCTION_QUALIFIED", "fail", "qualification",
+            "签名资格报告、证据文件或候选身份未通过独立重验", {"production_qualified": False},
+            "在独立资格机补齐全部签名验收证据后重新构建候选")]
+        return result, 3
+    except (InstallPlanError, OSError, MemoryError):
+        result = _base_result("install --plan", "error", "候选未通过本机完整性核验")
+        result["checks"] = [_check("INSTALL_CANDIDATE_VERIFIED", "fail", "candidate",
+            "候选 manifest、源码归档或逐文件摘要不一致", {"candidate_verified": False},
+            "请从可信交付通道重新取得候选并核对外部 manifest SHA256")]
+        return result, 2
+    if candidate_row["manifest_sha256"] != expected_manifest_sha256:
+        result = _base_result("install --plan", "refused", "候选与外部可信摘要不一致")
+        result["checks"] = [_check("INSTALL_EXTERNAL_MANIFEST_PIN", "fail", "candidate",
+            "本机候选 manifest 未命中独立可信通道摘要", {"external_pin_matched": False},
+            "停止安装并重新取得候选；不要采用候选目录内自带的摘要")]
+        return result, 3
+    binding = _installation_config_binding(state)
+    plan_identity = {
+        "schema_version": 1, "operation": "install", "scope": "qualification-lab" if qualification_lab else "production",
+        "source_revision": candidate_row["revision"], "source_tree": candidate_row["tree"],
+        "candidate_manifest_sha256": candidate_row["manifest_sha256"],
+        "source_archive_sha256": candidate_row["archive_sha256"], "configuration_binding": binding,
+    }
+    plan_id = _sha256_bytes(json.dumps(plan_identity, sort_keys=True, separators=(",", ":")).encode())
+    result = _base_result("install --plan", "planned", "安装事务计划已生成；尚未执行任何变更")
+    result["plan_id"] = plan_id
+    result["scope"] = plan_identity["scope"]
+    result["checks"] = [
+        _check("INSTALL_TARGET_LINUX", "pass", "local", "计划在目标 Linux 主机生成", {"target_linux": True}),
+        _check("INSTALL_CONFIG_VALID", "pass", "config", "配置与首个支持 profile 匹配", {"profile": SUPPORTED_PROFILE}),
+        _check("INSTALL_EXTERNAL_MANIFEST_PIN", "pass", "candidate", "候选命中独立可信通道 manifest SHA256",
+               {"external_pin_matched": True}),
+        _check("INSTALL_CANDIDATE_VERIFIED", "pass", "candidate", "候选 manifest、源码归档和逐文件摘要完全一致",
+               {"source_revision": candidate_row["revision"], "production_qualified": candidate_row["production_qualified"],
+                "qualification_reverified": not qualification_lab}),
+        _check("INSTALL_PLAN_READ_ONLY", "pass", "safety", "计划阶段未调用网络、Docker、PM2、Caddy、数据库或云 API",
+               {"changed": False, "service_commands": 0, "network_probes": 0}),
+    ]
+    result["actions"] = [
+        {"sequence": 1, "code": "REVALIDATE_LIVE_GATES", "target": "ordinary OJ, active contests, queues, cloud and locks", "rollback": "not-needed"},
+        {"sequence": 2, "code": "CREATE_DURABLE_BACKUP", "target": "source, config, secrets references, plugin, PM2 and Caddy state", "rollback": "retain-until-independent-verification"},
+        {"sequence": 3, "code": "INSTALL_FROZEN_SOURCE", "target": "/opt/noi-linux-contest-system", "rollback": "restore-complete-source-snapshot"},
+        {"sequence": 4, "code": "INSTALL_HYDRO_INTEGRATION", "target": "Hydro addon and idempotency state", "rollback": "restore-addon-and-exact-PM2-definition"},
+        {"sequence": 5, "code": "PUBLISH_CLOSED_FRONTEND", "target": "closed exam Caddy snippet and one conditional config commit", "rollback": "restore-disk-and-live-Caddy-baseline"},
+        {"sequence": 6, "code": "START_ORCHESTRATOR_ONLY", "target": "noi-orchestrator", "rollback": "restore-prior-container-and-config"},
+        {"sequence": 7, "code": "VERIFY_AND_COMMIT", "target": "ordinary OJ continuity, closed ingress, queues, cloud and rollback marker", "rollback": "automatic-complete-combination"},
+    ]
+    result["warnings"] = [
+        "计划有效性依赖候选、配置绑定和目标机事实；apply 前必须全部重验。",
+        "当前命令只生成公开计划；执行前还必须生成并独立钉住 root-only 私有升级计划。",
+    ]
+    if qualification_lab:
+        result["warnings"].append("这是资格实验室计划，不能用于生产比赛环境。")
+    else:
+        result["warnings"].append("生产资格证据已完整重验；本命令仍不会安装或修改服务。")
+    _assert_no_secret_leak(result, state.secret_candidates)
+    return result, 0
+
+
+def _private_install_operation(path: str, expected_sha256: str) -> str:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 \
+                or not 0 < metadata.st_size <= 2 * 1024 * 1024 \
+                or (_runtime_system() == "Linux" and
+                    (metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) & 0o077)):
+            raise ValueError("private install plan metadata differs")
+        raw = b""
+        while len(raw) <= metadata.st_size:
+            chunk = os.read(descriptor, min(65536, metadata.st_size + 1 - len(raw)))
+            if not chunk: break
+            raw += chunk
+        if len(raw) != metadata.st_size or hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise ValueError("private install plan trust pin differs")
+    finally:
+        os.close(descriptor)
+    try: value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("private install plan is invalid") from exc
+    operation = value.get("operation") if isinstance(value, dict) else None
+    if operation not in {"upgrade", "clean-install"}:
+        raise ValueError("private install operation differs")
+    return operation
+
+
+def _install_apply(private_plan: str | None, expected_plan_sha256: str | None) -> tuple[dict[str, Any], int]:
+    result = _base_result("install --apply", "error", "安装事务未执行")
+    if _runtime_system() != "Linux" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        result["checks"] = [_check("INSTALL_APPLY_ROOT_LINUX", "fail", "local",
+            "安装事务只能由目标 Linux 主机的 root 执行", {"root_linux": False},
+            "请在目标机 root-only 会话中执行同一条命令")]
+        return result, 3
+    if not isinstance(private_plan, str) or not private_plan \
+            or not isinstance(expected_plan_sha256, str) \
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_plan_sha256):
+        result["checks"] = [_check("INSTALL_PRIVATE_PLAN_PIN", "fail", "plan",
+            "必须同时提供 root-only 私有计划和独立取得的 64 位 SHA256",
+            {"private_plan_pinned": False}, "重新生成私有计划并从独立终端复制摘要")]
+        return result, 2
+    try:
+        operation = _private_install_operation(private_plan, expected_plan_sha256)
+    except (OSError, ValueError):
+        result["checks"] = [_check("INSTALL_PRIVATE_PLAN_PIN", "fail", "plan",
+            "私有计划的元数据、摘要、格式或事务类型不符合契约", {"private_plan_pinned": False},
+            "重新生成私有计划并从独立终端复制摘要")]
+        return result, 2
+    executor = REPO_ROOT / "scripts" / (
+        "apply_v1_clean_install.py" if operation == "clean-install" else "apply_v1_install.py"
+    )
+    command = [sys.executable, str(executor), "--apply", "--private-plan", private_plan,
+               "--expected-plan-sha256", expected_plan_sha256]
+    environment = {
+        "HOME": "/root", "USER": "root", "LOGNAME": "root", "SHELL": "/bin/bash",
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    try:
+        completed = subprocess.run(command, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
+            timeout=3600, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        result["changed"] = True
+        result["summary"] = "安装执行被中断；必须用完全相同的计划和摘要重新运行以触发恢复"
+        result["checks"] = [_check("INSTALL_TRANSACTION_TERMINAL", "fail", "transaction",
+            "执行器没有返回可验证终态；未输出异常或私有路径", {"terminal": False},
+            "不要手工改服务；原样重跑 install --apply 让持久事务自动回滚")]
+        return result, 4
+    if completed.returncode != 0 or not 0 < len(completed.stdout) <= 1024 * 1024:
+        result["changed"] = True
+        result["summary"] = "安装事务未提交；请按同一计划重跑恢复并检查 root-only 事务日志"
+        result["checks"] = [_check("INSTALL_TRANSACTION_TERMINAL", "fail", "transaction",
+            "执行器拒绝、失败或输出不完整；stderr 已隐藏", {"terminal": False},
+            "禁止改用旧脚本；原样重跑以收敛到 rollback_verified")]
+        return result, 4
+    try:
+        terminal = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        terminal = None
+    fields = {"status", "plan_id", "backup_manifest_sha256"} | ({"operation"} if operation == "clean-install" else set())
+    if not isinstance(terminal, dict) or set(terminal) != fields \
+            or terminal.get("status") not in {"committed", "rollback_verified"} \
+            or (operation == "clean-install" and terminal.get("operation") != operation) \
+            or not re.fullmatch(r"[a-f0-9]{64}", str(terminal.get("plan_id"))) \
+            or not re.fullmatch(r"[a-f0-9]{64}", str(terminal.get("backup_manifest_sha256"))):
+        result["changed"] = True
+        result["summary"] = "安装执行器返回了无法验证的终态"
+        result["checks"] = [_check("INSTALL_TRANSACTION_TERMINAL", "fail", "transaction",
+            "终态结构或身份不符合 V1 契约", {"terminal": False},
+            "原样重跑同一计划；不要手工启动或重载任何服务")]
+        return result, 4
+    committed = terminal["status"] == "committed"
+    result = _base_result("install --apply", "ok" if committed else "rolled_back",
+                          "安装已提交并通过终验" if committed else "安装失败但已完整回滚并通过终验")
+    result["changed"] = committed
+    result["plan_id"] = terminal["plan_id"]
+    result["checks"] = [_check("INSTALL_TRANSACTION_TERMINAL", "pass", "transaction",
+        "持久事务已到达唯一可接受终态", {"terminal": True, "status": terminal["status"]})]
+    result["actions"] = [{"code": "INSTALL_CLEAN_TRANSACTION" if operation == "clean-install" else "INSTALL_UPGRADE_TRANSACTION",
+        "status": terminal["status"], "backup_manifest_sha256": terminal["backup_manifest_sha256"]}]
+    if not committed:
+        result["warnings"] = [
+            "当前仍是安装前的完整组合；修复失败原因后必须生成新计划。"
+            if operation == "clean-install" else
+            "当前仍是升级前的完整组合；修复失败原因后必须生成新计划。"
+        ]
+    return result, 0 if committed else 4
+
+
 def _config_file_metadata(state: ConfigState | None) -> dict[str, Any]:
     if state is None:
         # An unvalidated --config value may name any local file.  Do not stat,
@@ -1128,6 +1566,13 @@ def _emit(result: dict[str, Any], json_output: bool) -> None:
         else:
             _print_text("文件: --output 指定的本地文件")
         _print_text(f"SHA256: {action['sha256']}")
+    if result.get("command") == "install --plan" and result.get("plan_id"):
+        _print_text(f"plan_id: {result['plan_id']}")
+        for action in result.get("actions", []):
+            _print_text(
+                f"{action['sequence']}. {action['code']}: {action['target']} "
+                f"(rollback={action['rollback']})"
+            )
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -1150,7 +1595,7 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = NoictlArgumentParser(
         prog="noictl",
-        description="NOI Linux 比赛系统第一批只读诊断 CLI",
+        description="NOI Linux 比赛系统诊断、计划与事务 CLI",
     )
     _add_common_options(parser)
     commands = parser.add_subparsers(dest="command_group", required=True)
@@ -1183,6 +1628,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="新文件路径；禁止覆盖，默认写当前目录中的时间戳文件",
     )
     support.set_defaults(handler="support_bundle")
+
+    install = commands.add_parser("install", help="安装或升级事务")
+    _add_common_options(install)
+    install_mode = install.add_mutually_exclusive_group(required=True)
+    install_mode.add_argument("--plan", action="store_true")
+    install_mode.add_argument("--apply", action="store_true")
+    install.add_argument(
+        "--candidate", metavar="DIR",
+        help="已冻结并通过完整性核验的 V1 候选目录",
+    )
+    install.add_argument(
+        "--expected-manifest-sha256", metavar="HEX64",
+        help="从候选目录之外的可信发布通道取得的 manifest SHA256",
+    )
+    install.add_argument(
+        "--qualification-lab", action="store_true",
+        help="仅生成隔离资格实验室计划；不得用于生产",
+    )
+    install.add_argument("--private-plan", metavar="PATH",
+        help="build_v1_private_upgrade_plan.py 生成的 root-only 私有计划")
+    install.add_argument("--expected-plan-sha256", metavar="HEX64",
+        help="从计划生成器输出中独立复制的私有计划 SHA256")
+    install.set_defaults(handler="install")
     return parser
 
 
@@ -1209,19 +1677,41 @@ def main(argv: list[str] | None = None) -> int:
         _emit(result, json_output)
         return 2
     json_output = bool(getattr(args, "json_output", False))
+    if args.handler == "install":
+        invalid_apply = args.apply and (
+            args.candidate is not None or args.expected_manifest_sha256 is not None
+            or args.qualification_lab or args.private_plan is None
+            or args.expected_plan_sha256 is None
+            or getattr(args, "config_path", None) is not None
+        )
+        invalid_plan = args.plan and (
+            args.candidate is None or args.expected_manifest_sha256 is None
+            or args.private_plan is not None or args.expected_plan_sha256 is not None
+        )
+        if invalid_apply or invalid_plan:
+            result = _base_result(
+                "install --apply" if args.apply else "install --plan",
+                "error", "安装命令参数无效；未执行任何操作",
+            )
+            result["checks"] = [_check("CLI_ARGUMENTS_VALID", "fail", "cli",
+                "计划与执行参数不能混用，执行模式也不读取 --config",
+                {"arguments_valid": False}, "请查看 noictl install --help")]
+            _emit(result, json_output)
+            return 2
     command_names = {
         "doctor": "doctor",
         "config_validate": "config validate",
         "config_show": "config show",
         "support_bundle": "support-bundle",
+        "install": "install --apply" if getattr(args, "apply", False) else "install --plan",
     }
     try:
-        configured_path = getattr(args, "config_path", None)
-        config_path = (
-            Path(configured_path).expanduser()
-            if configured_path is not None
-            else _default_config_path()
-        )
+        if args.handler == "install" and args.apply:
+            config_path = None
+        else:
+            configured_path = getattr(args, "config_path", None)
+            config_path = (Path(configured_path).expanduser()
+                if configured_path is not None else _default_config_path())
     except MemoryError:
         raise
     except Exception:
@@ -1251,6 +1741,14 @@ def main(argv: list[str] | None = None) -> int:
             result, exit_code = _config_show(config_path)
         elif args.handler == "support_bundle":
             result, exit_code = _support_bundle(config_path, args.output)
+        elif args.handler == "install":
+            if args.apply:
+                result, exit_code = _install_apply(args.private_plan, args.expected_plan_sha256)
+            else:
+                result, exit_code = _install_plan(
+                    config_path, args.candidate, args.qualification_lab,
+                    args.expected_manifest_sha256,
+                )
         else:  # pragma: no cover - argparse makes this unreachable.
             raise AssertionError("unknown handler")
         _emit(result, json_output)
@@ -1259,19 +1757,21 @@ def main(argv: list[str] | None = None) -> int:
         # Never print a traceback: exception text may contain a path, URL, or
         # value originating in a local configuration.  Tests and maintainers
         # can reproduce with a synthetic configuration instead.
-        result = _base_result(
-            command_names.get(args.handler, "unknown"),
-            "error",
-            "只读命令发生内部错误；异常详情因脱敏策略未输出",
-        )
+        applying = args.handler == "install" and getattr(args, "apply", False)
+        result = _base_result(command_names.get(args.handler, "unknown"), "error",
+            "升级命令发生内部错误；状态可能需要恢复" if applying
+            else "只读命令发生内部错误；异常详情因脱敏策略未输出")
+        result["changed"] = applying
         result["checks"] = [
             _check(
                 "READ_ONLY_INTERNAL_ERROR",
                 "fail",
                 "safety",
-                "命令已停止，未执行网络、服务或配置写操作",
+                "异常详情已隐藏；升级命令须以相同计划重跑恢复" if applying
+                else "命令已停止，未执行网络、服务或配置写操作",
                 {"exception_details_emitted": False},
-                "请使用不含真实秘密的最小配置向维护者报告",
+                "原样重跑相同私有计划" if applying
+                else "请使用不含真实秘密的最小配置向维护者报告",
             )
         ]
         _emit(result, json_output)

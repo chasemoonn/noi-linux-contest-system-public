@@ -320,14 +320,16 @@ check_mode_600 "${plugin_env}"
 if [[ -r "${plugin_env}" ]]; then
   unset ORCHESTRATOR_IDEMPOTENCY_FILE \
     ORCHESTRATOR_NOTIFICATION_IDEMPOTENCY_FILE \
-    ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE
+    ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE \
+    ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE
   set -a
   # shellcheck disable=SC1090
   if source "${plugin_env}"; then
     for state_variable in \
       ORCHESTRATOR_IDEMPOTENCY_FILE \
       ORCHESTRATOR_NOTIFICATION_IDEMPOTENCY_FILE \
-      ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE; do
+      ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE \
+      ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE; do
       state_path=${!state_variable:-}
       if [[ -z "${state_path}" ]]; then
         fail "missing ${state_variable} in ${plugin_env}"

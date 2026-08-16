@@ -23,6 +23,10 @@ class RealtimeJudgePermanentError(RealtimeJudgeError):
     """Hydro permanently rejected a submission."""
 
 
+class RealtimeJudgeAmbiguousError(RealtimeJudgeError):
+    """Hydro may have created the record; automatic replay is forbidden."""
+
+
 class RealtimeJudgeTimeout(TimeoutError, RealtimeJudgeError):
     """A synchronous caller could not obtain a Hydro rid before its deadline."""
 
@@ -191,6 +195,10 @@ class RealtimeJudge:
                 lease_token,
                 error,
                 retry_at=retry_at,
+                ambiguous=bool(result.get("ambiguous")),
+                resolution_after=(
+                    self.clock() + 2.0 if result.get("ambiguous") else None
+                ),
             )
         except SubmissionLeaseLostError:
             # The HTTP request outlived its lease. A replacement worker uses the
@@ -228,6 +236,10 @@ class RealtimeJudge:
             if state == "permanent_failed":
                 raise RealtimeJudgePermanentError(
                     str(row.get("last_error") or "Hydro permanently rejected submission")
+                )
+            if state == "ambiguous":
+                raise RealtimeJudgeAmbiguousError(
+                    "OJ 递交结果不确定；已禁止自动重发，等待只读核对"
                 )
             if state == "local" or not row.get("submission_id"):
                 raise RealtimeJudgePermanentError(
@@ -277,6 +289,29 @@ class RealtimeJudge:
             processed.append(row)
         return processed
 
+    def resolve_ambiguous_once(self) -> dict | None:
+        """Run one exact, read-only OJ correlation check."""
+        row = self.store.claim_ambiguous_web_submission(
+            now=self.clock(),
+            check_seconds=30.0,
+        )
+        if row is None:
+            return None
+        result = self.submitter.resolve_submission(str(row["submission_id"]))
+        if result.get("ok") and result.get("rid"):
+            return self.store.finish_ambiguous_web_submission(
+                int(row["id"]),
+                str(row["submission_id"]),
+                rid=str(result["rid"]),
+                now=self.clock(),
+            )
+        return self.store.finish_ambiguous_web_submission(
+            int(row["id"]),
+            str(row["submission_id"]),
+            resolution_status=str(result.get("status") or "unavailable"),
+            now=self.clock(),
+        )
+
     def run_forever(
         self,
         stop_event: threading.Event,
@@ -290,7 +325,8 @@ class RealtimeJudge:
         try:
             while not stop_event.is_set():
                 try:
-                    row = self.process_once()
+                    resolved = self.resolve_ambiguous_once()
+                    row = resolved if resolved is not None else self.process_once()
                     self._worker_last_ok_at = time.time()
                     self._worker_last_error = ""
                 except Exception as exc:

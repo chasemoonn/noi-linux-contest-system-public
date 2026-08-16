@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 clean install rehearsal observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "plan_id", "private_plan_sha256", "backup_manifest_sha256", "kind", "phase", "result", "artifacts"],
+  "properties": {
+    "$schema": {"const": "v1-clean-install-rehearsal-observation.schema.json"},
+    "schema_version": {"const": 1},
+    "plan_id": {"$ref": "#/$defs/hex64"},
+    "private_plan_sha256": {"$ref": "#/$defs/hex64"},
+    "backup_manifest_sha256": {"$ref": "#/$defs/hex64"},
+    "kind": {"enum": ["success", "phase_failure", "power_loss"]},
+    "phase": {"type": ["string", "null"], "enum": [null, "source_release", "clean_materials", "hydro_integration", "closed_frontend", "controller", "post_install_verification"]},
+    "result": {"oneOf": [{"$ref": "#/$defs/success"}, {"$ref": "#/$defs/rollback"}]},
+    "artifacts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["execution_log", "ordinary_after", "fresh_baseline", "ordinary_before", "terminal_receipt"],
+      "properties": {
+        "execution_log": {"$ref": "#/$defs/artifact"}, "ordinary_after": {"$ref": "#/$defs/artifact"},
+        "fresh_baseline": {"$ref": "#/$defs/artifact"}, "ordinary_before": {"$ref": "#/$defs/artifact"},
+        "terminal_receipt": {"$ref": "#/$defs/artifact"}, "ready_marker": {"$ref": "#/$defs/artifact"},
+        "child_log": {"$ref": "#/$defs/artifact"}, "resume_log": {"$ref": "#/$defs/artifact"}
+      }
+    }
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["filename", "bytes", "sha256"], "properties": {"filename": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}, "bytes": {"type": "integer", "minimum": 0}, "sha256": {"$ref": "#/$defs/hex64"}}},
+    "success": {"type": "object", "additionalProperties": false, "required": ["terminal", "controller_healthy", "closed_frontend", "active_seats", "managed_rules", "cloud_state", "pending_markers", "ordinary_oj_errors", "ordinary_oj_restarts", "ordinary_oj_pid_changes"], "properties": {"terminal": {"const": "committed"}, "controller_healthy": {"const": true}, "closed_frontend": {"const": true}, "active_seats": {"const": 0}, "managed_rules": {"const": 0}, "cloud_state": {"const": "STOPPED"}, "pending_markers": {"const": 0}, "ordinary_oj_errors": {"const": 0}, "ordinary_oj_restarts": {"const": 0}, "ordinary_oj_pid_changes": {"const": 0}}},
+    "rollback": {"type": "object", "additionalProperties": false, "required": ["terminal", "clean_target", "caddy_restored", "hydro_restored", "controller_absent", "cloud_state", "pending_markers", "ordinary_oj_errors", "ordinary_oj_restarts", "ordinary_oj_pid_changes"], "properties": {"terminal": {"const": "rollback_verified"}, "clean_target": {"const": true}, "caddy_restored": {"const": true}, "hydro_restored": {"const": true}, "controller_absent": {"const": true}, "cloud_state": {"const": "STOPPED"}, "pending_markers": {"const": 0}, "ordinary_oj_errors": {"const": 0}, "ordinary_oj_restarts": {"const": 0}, "ordinary_oj_pid_changes": {"const": 0}}}
+  }
+}

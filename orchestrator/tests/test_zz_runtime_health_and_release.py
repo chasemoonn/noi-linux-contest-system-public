@@ -20,7 +20,7 @@ if "main" not in sys.modules:
     _runtime = Path(tempfile.mkdtemp(prefix="noi-runtime-health-tests-"))
     service_root = _runtime.resolve().as_posix()
     if os.name == "nt":
-        service_root = "/" + service_root.split(":/", 1)[1]
+        service_root = "//?/" + service_root
     config_path = _runtime / "config.yaml"
     config_path.write_text(
         f"""
@@ -43,6 +43,7 @@ hydro:
   internal_base_url: http://127.0.0.1:8888
   mongo_uri: mongodb://127.0.0.1:27017/test
   domain_id: system
+  orchestrator_token: 0123456789abcdef0123456789abcdef
   submit_enabled: false
 orchestrator:
   admin_password: 1234567890123456
@@ -354,6 +355,7 @@ class DisabledRealtimeHealthTests(unittest.TestCase):
         for mode, state in (("web", "registered"), ("both", "collecting")):
             with self.subTest(mode=mode, state=state):
                 fake_store = mock.Mock()
+                fake_store.active_seat_count.return_value = 0
                 fake_store.seat_notification_health.return_value = {
                     "counts": {"pending": 0, "retry": 0, "sent": 0},
                     "max_retry_attempts": 0,
@@ -380,6 +382,7 @@ class DisabledRealtimeHealthTests(unittest.TestCase):
 
     def test_folder_only_active_contests_stay_healthy_without_worker(self):
         fake_store = mock.Mock()
+        fake_store.active_seat_count.return_value = 0
         fake_store.seat_notification_health.return_value = {
             "counts": {
                 "pending": 1,
@@ -425,6 +428,7 @@ class DisabledRealtimeHealthTests(unittest.TestCase):
         ):
             with self.subTest(state=state):
                 fake_store = mock.Mock()
+                fake_store.active_seat_count.return_value = 0
                 fake_store.contests.return_value = [
                     {
                         "tid": "n" * 24,

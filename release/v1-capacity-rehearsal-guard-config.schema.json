@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 capacity rehearsal read-only guard configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "identity_path", "session_dir", "probe_paths", "action_agents", "action_outputs"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "identity_path": {"$ref": "#/$defs/path"},
+    "session_dir": {"$ref": "#/$defs/path"},
+    "probe_paths": {
+      "type": "object", "additionalProperties": false,
+      "required": ["measurement", "seat_inventory", "workload_events", "fault_events", "ordinary_oj_observations", "shutdown_observation"],
+      "properties": {
+        "measurement": {"$ref": "#/$defs/path"}, "seat_inventory": {"$ref": "#/$defs/path"},
+        "workload_events": {"$ref": "#/$defs/path"}, "fault_events": {"$ref": "#/$defs/path"},
+        "ordinary_oj_observations": {"$ref": "#/$defs/path"}, "shutdown_observation": {"$ref": "#/$defs/path"}
+      }
+    },
+    "action_agents": {
+      "type": "object", "additionalProperties": false, "required": ["workload", "network"],
+      "properties": {"workload": {"$ref": "#/$defs/agent"}, "network": {"$ref": "#/$defs/agent"}}
+    },
+    "action_outputs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["workload_receipt", "workload_envelope", "network_receipt", "network_envelope"],
+      "properties": {
+        "workload_receipt": {"$ref": "#/$defs/path"}, "workload_envelope": {"$ref": "#/$defs/path"},
+        "network_receipt": {"$ref": "#/$defs/path"}, "network_envelope": {"$ref": "#/$defs/path"}
+      }
+    }
+  },
+  "$defs": {
+    "path": {"type": "string", "pattern": "^/([^/]+/)*[^/]+$"},
+    "hex64": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "agent": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": {"path": {"$ref": "#/$defs/path"}, "sha256": {"$ref": "#/$defs/hex64"}}}
+  }
+}

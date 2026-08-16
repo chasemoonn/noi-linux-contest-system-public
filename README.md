@@ -1,186 +1,128 @@
-# Hydro NOI Contest Kit
+# NOI Linux 考试系统
 
-> 把现有 Hydro OJ 扩展成一套可预热、可远程操作、可在截止时自动冻结并回收程序的 NOI Linux 模拟赛平台。
+> 把 OJ 中的一场 OI 比赛转换为标准化、可审计、可自动收卷的远程 NOI Linux 考场。
 
 [![CI](https://github.com/chasemoonn/noi-linux-contest-system-public/actions/workflows/ci.yml/badge.svg)](https://github.com/chasemoonn/noi-linux-contest-system-public/actions/workflows/ci.yml)
 ![Status](https://img.shields.io/badge/status-alpha-orange)
 ![Hydro](https://img.shields.io/badge/Hydro-5.0.1--5.0.x-blue)
 ![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)
 
-本项目面向需要组织 CSP-J/S、NOIP 或 NOI 风格模拟赛的学校和教师。它在 Hydro 之外增加一套独立控制面，为每名选手提前准备一个隔离的 NOI Linux 桌面，并提供材料审核、名单绑定、网页递交、目录收卷、Hydro 回传、故障座位替换和云主机自动关停。
+本系统不重新实现 OJ。OJ 负责账号、比赛、报名、题目、递交、评测、源码和成绩；本系统负责 CSP 风格材料、隔离桌面、正式答案目录、程序回收、座位生命周期、截止冻结、归档和安全关机。
 
-本项目不是 Hydro、CCF 或 NOI 官方项目，不替代正式赛事系统。当前版本处于 **Alpha**：真人单座闭环已经完成验证；官方 GNOME 桌面的 **15 个正式座位 + 2 个备用位** 容量签字尚未完成，因此当前版本不能据此承诺正式承载 15 人。
+本项目不是 CCF、NOI 或任何 OJ 项目的官方组件，也不能替代正式赛事系统。当前处于 **Alpha**：核心 V1 逻辑与单座闭环已有验证；官方 GNOME 桌面的 15 个正式座位 + 2 个备用座位仍须按当前 commit、镜像和实例规格完成 60 分钟容量签字。
 
-| 教师状态台 | 选手登录页 | 收卷报告 |
-| --- | --- | --- |
-| ![教师查看比赛与座位状态](docs/screenshots/teacher-status.png) | ![选手登录程序回收系统](docs/screenshots/student-login.png) | ![教师查看收卷和回传结果](docs/screenshots/collection-report.png) |
+## 产品原则
 
-以上界面使用固定的脱敏演示数据生成，不包含真实域名、账号、比赛入口或学生答案。生成方法见 [演示资产说明](docs/screenshots/README.md)。
-
-## 它解决什么问题
-
-传统远程模拟赛通常需要老师临时创建虚拟机、逐个发送密码、提醒学生保存文件，并在截止后手工下载和核对程序。本项目把这条流程固化为可审计的生命周期：
-
-1. 从 Hydro 读取比赛、题目和名单。
-2. 按容量提前创建并逐座验收桌面。
-3. 开赛前发放每名学生独立的入口和凭据。
-4. 比赛期间保持 OI 盲测，并支持网页递交或官方目录结构。
-5. 截止时由比赛机本地计时器先冻结全部座位。
-6. 回收程序、生成 Hydro RID、输出报告并关闭公网入口。
-7. 撤销学生访问规则并停止比赛服务器，普通 OJ 不受影响。
+1. **OJ 是唯一权威**：比赛、报名、时间、提交、评测和成绩只在 OJ 维护。
+2. **正式目录是唯一源码**：固定为 `考号/题目名/题目名.cpp`。
+3. **每次递交都进 OJ**：网页只读取正式文件并递交，不保存第二份源码。
+4. **截止再核对**：冻结最终目录；若最终文件不是最后已确认版本，系统补交一次。
+5. **一人一容器**：桌面、进程、答案和凭据相互隔离。
+6. **OJ 时间唯一**：延后自动同步，提前结束立即冻结；截止后 30 分钟只用于送达和归档。
+7. **报名自动扩座**：报名即视为已审核；备用位为 `max(2, ceil(报名人数×10%))`。
+8. **失败关闭**：事实、哈希、入口、队列或云状态不能证明正确时，不公开桌面、不关机、不删除。
 
 ```mermaid
 flowchart LR
-    A["Hydro 比赛"] --> B["教师办赛控制面"]
-    B --> C["材料审核与座位预热"]
-    C --> D["一名学生一个容器"]
-    D --> E["网页递交或目录保存"]
-    E --> F["到点冻结与收卷"]
-    F --> G["Hydro RID 与审计报告"]
-    G --> H["撤销入口并停止比赛机"]
+    A["OJ 比赛"] --> B["CSP 材料"]
+    B --> C["教师测试"]
+    C --> D["自动座位池"]
+    D --> E["NOI Linux 正式目录"]
+    E --> F["每次递交到 OJ"]
+    F --> G["截止冻结与最终补交"]
+    G --> H["归档和安全关机"]
 ```
 
-## 当前成熟度
+## 用户体验
 
-| 能力 | 当前状态 | 说明 |
-| --- | --- | --- |
-| 单座真人闭环 | 已验证 | 登录、桌面编辑、合法文件保存、冻结、收卷、Hydro RID、关机均已完成 |
-| 网页递交 | 已验证 | 每次明确递交创建独立 RID；同一次网络重试复用原 RID |
-| 目录收卷 | 已验证 | 支持 `准考证号/题目名/题目名.cpp`，截止后冻结再回收 |
-| 双轨模式 | 已验证 | 网页为正式版本，目录可作回退；最终规则固定且可审计 |
-| 低延迟桌面直连 | Alpha 已验证 | 固定 EIP 裸 HTTP 直连，画质 9、压缩 2；公网明文和校园网络策略是已知限制 |
-| 15+2 官方桌面容量 | 待签字 | 需要用当前 GNOME 镜像完成 60 分钟真实操作、编译、重连和统一收卷 |
-| 阿里云自动生命周期 | Alpha 已验证 | 固定 EIP、专属安全组、开关机、规则撤销和失败关闭 |
-| 腾讯云与自有机房 | 实验性 | 尚未通过与阿里云同等级的入口生命周期和故障恢复认证 |
-| 通用自助安装器 | 规划中 | 当前部署仍要求熟悉 Linux、Hydro、Docker、Caddy 和云控制台 |
+### 学生桌面
 
-完整边界见 [支持矩阵](docs/SUPPORT_MATRIX.md)，产品化进度见 [开源路线图](docs/OPEN_SOURCE_ROADMAP.md)。
+固定提供五类对象：
 
-## 不会为了简单而牺牲的约束
+1. `01_比赛题面.pdf`
+2. `02_辅助自测数据/`
+3. `03_正式答案目录/`
+4. `04_程序回收系统`
+5. `05_使用说明.txt`
 
-1. **一人一容器**：学生进程、答案目录和桌面会话相互隔离。
-2. **官方环境来源可证明**：正式桌面基于经过 SHA256 校验的 NOI Linux 2.0 ISO 构建。
-3. **OI 盲测**：学生比赛中看不到分数、测试点或排行榜。
-4. **截止先冻结**：比赛机本地 systemd timer 先暂停座位，再关闭入口和收卷。
-5. **提交有收据**：源码、选择规则、RID、报告和最终状态可交叉核对。
-6. **普通 OJ 隔离**：模拟赛控制面或比赛机故障不得扩大为普通 Hydro 故障。
-7. **失败关闭**：网络、安全组、通知、镜像或收卷状态不能证明正确时，不公开学生入口。
+PDF 按 CSP 风格生成。每道题提供 2～4 组不同梯度的 `.in/.out`，仅供本地自测，不进入 OJ 正式测试数据，也不影响得分。
 
-## 适合谁
+学生在正式目录编辑和保存，程序回收系统展示当前文件并执行递交。OI 比赛中学生只看送达状态，不看分数、测试点或排行榜；赛后回到 OJ 查看自己的源码和成绩。
 
-- 已经运行 Hydro `>=5.0.1,<5.1.0`，准备开展 NOI Linux 模拟赛的学校或教师。
-- 愿意先在测试比赛中完成一座真人验收的技术管理员。
-- 需要网页递交、目录自动回收或二者并行的 OI 比赛。
-- 希望比赛服务器平时关机节省费用、赛前自动预热的团队。
+### 老师端
 
-当前版本不适合：没有 Linux 管理人员、直接在正式比赛中首次安装、多人共享同一个 Hydro 应用进程、或要求完全无需云端/服务器配置的场景。
+老师只接触五个页面：
 
-## 首个官方支持目标
+- 比赛总览
+- 比赛材料
+- 学生座位
+- 递交与评测
+- 结束与归档
 
-首个正式支持配置命名为 `aliyun-hydro5-pm2-direct-v1`：
+老师可以创建考试、审核材料、运行教师测试、查看自动扩容、替换单个故障座位、打开 OJ 实时成绩、提前结束和重试收卷。老师不能操作服务器、数据库、云密钥、Caddy、PM2、学生口令或强制关机。
+
+## 完整生命周期
+
+1. 老师在 OJ 创建隐藏 OI 比赛、添加题目并开放报名。
+2. 系统读取比赛并生成 CSP PDF 与辅助数据。
+3. 本地 validator、双跑 oracle、哈希去重通过后，老师预览并批准。
+4. 同一 PDF 和数据包以私有附件发布到 OJ，并挂载到学生桌面。
+5. 第一座教师测试通过后，系统按报名自动准备所有座位与备用位。
+6. 到发放时间后，通过 OJ 站内消息发入口。
+7. 学生每次递交都可靠写入 outbox，再幂等送到 OJ。
+8. 比赛服务器本地 timer 在截止点先暂停座位、再关闭入口。
+9. 系统核对最终目录，补交最后文件，等待评测队列，生成收卷凭据。
+10. 撤销学生访问规则，30 分钟保护期后再次核验并停止比赛服务器。
+
+## 可靠性设计
+
+- 材料发布、通知和 OJ 送评均有持久幂等键与回执。
+- 备赛中进程重启会转为可见错误并保持入口关闭。
+- 收卷和安全等待拥有可重复的恢复路径。
+- 教师动作和系统状态迁移写入不含密钥、源码和 Token 的审计日志。
+- 本地非最终草稿保留 30 天；最终材料和收卷证据保留 180 天；普通 OJ 权威记录从不由本系统清理。专门创建的合成资格测试赛在完整取证和资源关停后，必须及时通过 OJ 原生流程删除并留下脱敏核验回执。
+- 清理严格限制在已安全结束的比赛目录，符号链接、越界路径和未登记对象都会使操作停止。
+- 普通 OJ 首页、登录和评测是每场比赛前后都必须通过的隔离门。
+
+## 当前支持边界
+
+首个支持目标为 `aliyun-hydro5-pm2-direct-v1`：
 
 - Hydro `>=5.0.1,<5.1.0`，单应用进程；
-- PM2/Nix + Caddy 的 Hydro 宿主；
-- 独立的阿里云 Ubuntu 22.04 比赛 ECS；
-- 16 vCPU / 64 GiB 内存；
-- 固定 EIP 和主网卡专属 basic 安全组；
-- `noi-linux-official:2.0` GNOME 桌面；
-- 一名学生一个 Docker 容器；
-- 目标容量 15 个正式座位和 2 个备用座位。
+- PM2/Nix + Caddy 的 OJ 宿主；
+- 独立阿里云 Ubuntu 22.04、16 vCPU / 64 GiB 比赛 ECS；
+- 固定 EIP、专属安全组和 OJ 管理 `/32`；
+- 基于已校验 NOI Linux 2.0 介质的 `noi-linux-official:2.0` GNOME 镜像；
+- 一人一 Docker 容器；
+- 目标容量 15 个正式座位 + 2 个备用座位。
 
-这里的“目标容量”只有在 [容量验收](deploy/VERIFICATION.md) 完成并进入发布清单后，才会升级为“已认证容量”。
+Direct HTTP 桌面链路仍是短时比赛的 Alpha 方案，存在明文链路和校园网络兼容限制；OJ HTTPS 兼容入口只作回退。详见 [支持矩阵](docs/SUPPORT_MATRIX.md)。
 
-## 组件
+## 仓库结构
 
 | 目录 | 职责 |
 | --- | --- |
-| `orchestrator/` | 教师控制面、配置校验、座位池、通知、实时送评、收卷和云生命周期 |
-| `hydro-plugin-orchestrator/` | Hydro `>=5.0.1,<5.1.0` 的递交、通知和私有题目接口 |
+| `orchestrator/` | 五页教师端、材料、座位、通知、送评、收卷、审计、恢复和云生命周期 |
+| `hydro-plugin-orchestrator/` | OJ 私有材料、递交、通知和题目克隆接口 |
 | `noi-linux-official/` | 官方 NOI Linux 根文件系统上的桌面与远程访问增量层 |
 | `noi-linux-sim/` | 旧 XFCE 应急回退镜像，不作为默认正式环境 |
-| `deploy/` | 服务器初始化、镜像构建、验证、发布和回滚脚本 |
-| `docs/` | 产品说明、支持矩阵、教师指南、架构与 AI 协作边界 |
-| `release/` | 发布清单、离线镜像交付说明、导入导出与校验工具 |
+| `deploy/` | 安装、镜像、比赛运行、验证和回滚 |
+| `docs/` | 产品契约、教师指南、支持矩阵和 AI 边界 |
+| `release/` | 离线镜像交付与发布清单 |
 
-## 快速开始
+## 安装与首次验收
 
-当前 Alpha 仍要求技术管理员完成部署，不能直接把下面步骤用于正式比赛。
+当前 Alpha 仍要求技术管理员完成安装，不能把首次部署直接用于正式比赛：
 
-1. 阅读 [支持矩阵](docs/SUPPORT_MATRIX.md)，确认宿主、Hydro 和比赛服务器符合首个 profile。
-2. 阅读 [部署说明](deploy/DEPLOYMENT.md)，在隔离环境安装控制面与 Hydro 插件。
-3. 使用官方 ISO 构建桌面镜像，并运行 [本机镜像验收](deploy/verify-contest-image-local.sh)。
-4. 按 [教师办赛手册](deploy/CONTEST_RUNBOOK.md) 创建隐藏测试赛。
-5. 先完成一名真人的登录、编辑、保存、递交、冻结、收卷和关机闭环。
+1. 阅读 [V1 产品契约](docs/V1_PRODUCT_CONTRACT.md)和[支持矩阵](docs/SUPPORT_MATRIX.md)。
+2. 按[部署说明](deploy/DEPLOYMENT.md)在隔离环境安装控制面和 OJ 插件。
+3. 从官方介质构建镜像并运行本机镜像验收。
+4. 按[比赛运行手册](deploy/CONTEST_RUNBOOK.md)完成一座真人 canary。
+5. 按[验收与容量签字](deploy/VERIFICATION.md)完成故障矩阵与目标容量测试。
 
-老师日常操作从 [教师办赛指南](docs/TEACHER_GUIDE.md) 开始；技术管理员再阅读部署和服务器 Runbook。
+## 本地与 CI 检查
 
-未来的安装入口会收敛为：
-
-```text
-noictl doctor
-noictl init
-noictl install --plan
-noictl install --apply
-noictl verify
-noictl canary
-noictl rollback
-```
-
-`doctor` 必须严格只读；任何写操作必须先生成计划，再由管理员显式确认执行。
-
-## 教师办赛流程
-
-教师日常目标是不再接触 SSH、Docker、Caddy、安全组或 AccessKey，而是在浏览器中完成：
-
-1. 选择 Hydro 比赛并核验 OI 赛制、时间和题目。
-2. 选择 `folder`、`web` 或 `both`，上传试题和自测材料。
-3. 选择经过认证的容量档，审核不可变办赛计划并预热。
-4. 绑定名单、发放入口、监控座位并在需要时切换备用位。
-5. 冻结、收卷、回传 Hydro、关机并下载赛后归档包。
-
-现有后台已经覆盖这些能力，但仍是一张工程操作台；分步安装和办赛向导属于开源产品化路线的一部分。
-
-## AI 可以做什么
-
-AI 是可选助手，不是安全边界，也不是安装前提。
-
-允许 AI：
-
-- 解释 `noictl doctor --json` 的脱敏诊断；
-- 根据版本化配置生成变更计划；
-- 辅助撰写题面和自测输入草稿；
-- 根据脱敏支持包给出排障建议；
-- 在本地或隔离环境复现测试。
-
-禁止 AI：
-
-- 直接修改 MongoDB、SQLite、Hydro 比赛数据或学生成绩；
-- 绕过 SSH 主机指纹、安全组、容量和活动比赛门禁；
-- 输出或上传密码、AccessKey、Token、隐藏数据和学生源码；
-- 在没有明确计划与确认时重启 Hydro、修改 Caddy 或启动收费资源；
-- 把 AI 生成的答案当成可信标准答案。
-
-AI 材料模式中，输入必须经过本地 validator，输出必须由本地可信 oracle 独立运行两次并一致，最后仍由教师批准。
-
-## 离线桌面镜像
-
-GitHub 仓库不保存完整桌面镜像、ISO、OCI tar 或其他大体积二进制。
-
-完整镜像通过独立的本地交付目录或其他渠道分发。每个离线包必须包含：
-
-- 镜像归档；
-- 桌面镜像 `manifest.json` 与对应 JSON Schema；
-- `SHA256SUMS`；
-- 包内自带的导入与导入后验证脚本；
-- 对应源码 revision 和镜像 immutable ID；
-- ISO SHA256 与桌面 contract；
-- 与 GitHub Release 中 `release-manifest.json` 的匹配关系。
-
-组合版 `release-manifest.json` 不重复塞入桌面包，而是随 GitHub Release 发布，并记录离线包 manifest 的 SHA256。详见 [本地离线镜像交付](release/LOCAL_IMAGE_BUNDLE.md)。仓库中的 `.gitignore` 会阻止常见镜像归档和 `local-release/` 目录被误提交。
-
-## 本地检查
-
-完整测试套件以 Linux/WSL、Python 3.12、Node.js 22 和 Bash 为基线；Windows 可直接运行第一批 `noictl` 和纯 Python 静态检查，但原生依赖与 POSIX 安全测试仍应以 Linux CI 结果为准。建议先创建虚拟环境，再安装固定依赖：
+Linux、Python 3.12、Node.js 22 和 Bash 是发布基线：
 
 ```bash
 python -m pip install -r orchestrator/requirements.txt
@@ -188,52 +130,54 @@ python -m compileall -q orchestrator
 (cd orchestrator && python -m unittest discover -s tests -v)
 node --check hydro-plugin-orchestrator/index.js
 node --test hydro-plugin-orchestrator/tests/*.test.js
+python scripts/run_v1_fault_injection.py --require-linux
 bash -n deploy/*.sh scripts/*.sh
 python scripts/build_demo.py --check
 python scripts/check_public_release.py
 ```
 
-`check_public_release.py` 同时支持 Git 工作树和 GitHub 下载的、不含 `.git` 的源码 ZIP；后者会扫描导出目录中的全部对象，不会依赖本地忽略规则跳过文件。
+源码测试不替代真实 Linux/Docker、教师 canary 和 15+2 长稳容量验收。
+其中故障注入门专门验证“提交已写入但回执丢失”、插件重启、控制器重启、
+核对网络中断和并发认领；任何一个场景失败都禁止构建候选包。
+CI 使用 Linux root 运行 `run_v1_linux_ci.py`，在 root-only 临时目录内汇总全部源码门并生成绑定 Git revision 与
+`effective_uid=0` 的
+`v1-linux-ci-evidence.json`，再由独立核验器验证并作为 artifact 保存。
 
-桌面镜像还必须在 Linux/Docker 主机上完成 folder、web、both 三模式验收。源码测试通过不等于桌面镜像或 15+2 容量已经通过。
+候选冻结和生产资格是两个独立阶段。使用
+[`release/V1_CANDIDATE.md`](release/V1_CANDIDATE.md) 生成并核验逐文件哈希的源码候选；
+使用 [`deploy/V1_QUALIFICATION.md`](deploy/V1_QUALIFICATION.md) 完成 Linux、跨机回滚、
+单座、故障恢复、普通 OJ 隔离和 15+2 一小时验收。资格报告未全部通过时，工具会强制保持
+`production_qualified=false`。
 
-## 安全与故障报告
+已有 NOI 站点的升级与从未安装 NOI 的干净目标必须走不同事务。首次安装的
+显式缺席基线、恢复目标和当前交付边界见
+[`docs/V1_CLEAN_INSTALL_TRANSACTION.md`](docs/V1_CLEAN_INSTALL_TRANSACTION.md)；隔离 Linux
+资格机上的 13 场景快照顺序见
+[`deploy/V1_CLEAN_INSTALL_REHEARSAL.md`](deploy/V1_CLEAN_INSTALL_REHEARSAL.md)。
+独立老师必须在第二台干净资格机上用
+`scripts/collect_v1_independent_teacher_install_observation.py` 自动生成安装与回滚 observation，不能
+手工填写通过项；签名、跨机器和 15+2 长稳门见 [`deploy/V1_QUALIFICATION.md`](deploy/V1_QUALIFICATION.md)。
 
-- 不要在公开 Issue 中粘贴 `.env`、配置文件、AccessKey、Token、比赛入口、学生账号、源码或收卷包。
-- 先生成脱敏诊断，再提交版本号、稳定错误码和最小复现步骤。
-- 活动比赛期间禁止升级控制面、Hydro 插件或桌面镜像。
-- 发现漏洞请按 [安全策略](SECURITY.md) 私下报告。
+跨机镜像资格采用六阶段、两主机证据链：导出、导入、提升、回滚、再次提升、恢复原基线。
+采集器只读，所有实际切换继续走带 pending marker 的配对事务，禁止手工只改 Docker 标签。
 
-## 文档
+## 安全与隐私
 
-- [产品定义](docs/PRODUCT.md)
-- [支持矩阵](docs/SUPPORT_MATRIX.md)
-- [开源路线图](docs/OPEN_SOURCE_ROADMAP.md)
+- 不要在 Issue、日志、截图或 AI 对话中公开 `.env`、配置明文、AccessKey、Token、SSH 私钥、座位凭据、真实学生身份、源码或收卷包。
+- 活动比赛期间禁止升级。
+- AI 可辅助题面整理、脱敏诊断和计划生成，但不能直接修改 OJ 数据、成绩或生产基础设施，也不能生成可信标准答案。
+- 漏洞请按 [SECURITY.md](SECURITY.md) 私下报告。
+
+## 主要文档
+
+- [V1 产品契约](docs/V1_PRODUCT_CONTRACT.md)
+- [产品说明](docs/PRODUCT.md)
 - [教师办赛指南](docs/TEACHER_GUIDE.md)
-- [`noictl` 命令契约](docs/NOICTL_COMMAND_CONTRACT.md)
-- [AI 协作边界与受限指令](docs/ai/README.md)
+- [支持矩阵](docs/SUPPORT_MATRIX.md)
 - [部署说明](deploy/DEPLOYMENT.md)
-- [教师办赛手册](deploy/CONTEST_RUNBOOK.md)
+- [比赛运行手册](deploy/CONTEST_RUNBOOK.md)
+- [验收与容量签字](deploy/VERIFICATION.md)
 - [架构与性能](deploy/ARCHITECTURE_AND_PERFORMANCE.md)
 - [官方环境一致性](deploy/OFFICIAL_PARITY.md)
-- [验证记录与适用边界](deploy/VERIFICATION.md)
-- [离线镜像交付](release/LOCAL_IMAGE_BUNDLE.md)
-- [首次公开发布检查单](docs/PUBLICATION_CHECKLIST.md)
 
-## 许可证与来源
-
-本项目按 GNU Affero General Public License v3.0 or later 发布，具体条款见 `LICENSE`。Hydro、NOI Linux、Ubuntu、GNOME、noVNC、TigerVNC 及其他第三方组件仍适用各自许可证和来源声明。
-
-使用本项目不代表获得 Hydro、CCF、NOI 或任何赛事组织方的官方认可。请保留 Hydro 的来源署名，并在公开部署修改版本时遵守相应开源义务。
-
-## 贡献
-
-当前最需要的贡献不是增加更多云厂商，而是：
-
-- 在全新受支持环境中验证安装流程；
-- 完成当前 GNOME 镜像的 15+2 长稳容量验收；
-- 改进只读诊断、失败清理和完整回滚；
-- 提供脱敏截图、教师指南和不同校园网络的体验数据；
-- 补齐阿里云之外的能力认证，而不是只实现“能开关机”。
-
-提交代码前请阅读 [贡献指南](CONTRIBUTING.md) 与 [社区行为规范](CODE_OF_CONDUCT.md)。所有正式能力都必须有机器测试、真人 canary 和明确的失败关闭行为。
+本项目按 GNU Affero General Public License v3.0 or later 发布。第三方组件适用各自许可证与来源声明。

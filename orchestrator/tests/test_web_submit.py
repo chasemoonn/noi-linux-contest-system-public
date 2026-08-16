@@ -23,7 +23,10 @@ _runtime = Path(tempfile.mkdtemp(prefix="noi-web-submit-tests-"))
 def _service_path(path: Path) -> str:
     value = path.resolve().as_posix()
     if os.name == "nt":
-        return "/" + value.split(":/", 1)[1]
+        # The production config contract deliberately accepts only
+        # slash-prefixed service paths.  A Windows extended path preserves that
+        # contract while still addressing the real platform temp directory.
+        return "//?/" + value
     return value
 
 
@@ -49,6 +52,7 @@ hydro:
   internal_base_url: http://127.0.0.1:8888
   mongo_uri: mongodb://127.0.0.1:27017/test
   domain_id: system
+  orchestrator_token: 0123456789abcdef0123456789abcdef
   submit_enabled: false
 orchestrator:
   admin_password: 1234567890123456
@@ -98,6 +102,59 @@ class CloudAdminRouteTests(unittest.TestCase):
         direct_status.assert_not_called()
         direct_start.assert_not_called()
         self.assertEqual(response.status_code, 303)
+
+    def test_teacher_can_requeue_failed_current_notifications(self):
+        tid = "3" * 24
+        with mock.patch.object(main, "notifier", object()), mock.patch.object(
+            main.store, "retry_failed_seat_notifications", return_value=4
+        ) as retry, mock.patch.object(main, "_spawn_notification_retry") as spawn:
+            response = main.admin_retry_notifications(tid, main.ADMIN_CSRF, "teacher")
+
+        retry.assert_called_once_with(tid)
+        spawn.assert_called_once_with(tid)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/admin/submissions")
+
+    def test_teacher_notification_retry_fails_closed_when_disabled(self):
+        with mock.patch.object(main, "notifier", None):
+            with self.assertRaisesRegex(HTTPException, "入口通知未启用"):
+                main.admin_retry_notifications("3" * 24, main.ADMIN_CSRF, "teacher")
+
+    def test_teacher_seat_export_contains_status_but_never_credentials(self):
+        tid = "4" * 24
+        main.store.upsert_contest(tid, "status export", ["apple"], {"apple": "P1"})
+        main.store.add_seat(
+            tid,
+            7,
+            "alice",
+            "secret-gateway-token",
+            "secret-vnc-password",
+            "secret-submit-token",
+            "CSP007",
+            "seat-fixture",
+            "172.18.0.7",
+        )
+        main.store.put_seat_pool(
+            tid,
+            None,
+            {
+                "schema_version": 1,
+                "tid": tid,
+                "revision": 1,
+                "seats": [
+                    {"slot_no": 1, "uid": 7, "uname": "alice", "state": "released"}
+                ],
+            },
+        )
+
+        response = main.admin_export(tid, "teacher")
+        body = response.body.decode("utf-8-sig")
+
+        self.assertIn("用户名,考号,座位号,座位状态", body)
+        self.assertIn("alice,CSP007,1,released", body)
+        self.assertNotIn("secret-gateway-token", body)
+        self.assertNotIn("secret-vnc-password", body)
+        self.assertNotIn("secret-submit-token", body)
 
     def test_reconcile_wrapper_keeps_service_alive_for_scheduled_retry(self):
         with mock.patch.object(
@@ -251,7 +308,47 @@ class MaterialAdminRouteTests(unittest.TestCase):
             paper_name="paper.pdf",
             paper_sha256="3" * 64,
             paper_size=10,
+            testdata_name="testdata.tar.gz",
+            testdata_sha256="4" * 64,
+            testdata_size=20,
+            testdata_files=6,
+            testdata_expanded_size=60,
         )
+
+    @staticmethod
+    def _publication(
+        tid: str,
+        revision: str,
+        *,
+        paper_sha256: str = "3" * 64,
+        paper_size: int = 10,
+        testdata_sha256: str = "4" * 64,
+        testdata_size: int = 20,
+    ) -> dict:
+        receipt = {
+            "publication_id": main.hashlib.sha256(
+                f"{tid}:{revision}".encode("ascii")
+            ).hexdigest(),
+            "tid": tid,
+            "revision": revision,
+            "attachments": [
+                {
+                    "name": "01_比赛题面.pdf",
+                    "sha256": paper_sha256,
+                    "size": paper_size,
+                },
+                {
+                    "name": "02_辅助自测数据.tar.gz",
+                    "sha256": testdata_sha256,
+                    "size": testdata_size,
+                },
+            ],
+        }
+        return {
+            "ok": True,
+            **receipt,
+            "receipt_sha256": main.store._canonical_json_sha256(receipt),
+        }
 
     def test_generate_route_requires_enabled_safe_runner(self):
         with mock.patch.object(main, "artifact_runner", None):
@@ -289,6 +386,8 @@ class MaterialAdminRouteTests(unittest.TestCase):
             main.hydro, "get_contest", return_value=document
         ), mock.patch.object(
             main.hydro, "get_problem", side_effect=lambda pid: problems.get(pid)
+        ), mock.patch.dict(
+            main.cfg["hydro"], {"submit_enabled": True}
         ):
             response = main.admin_register(
                 tid=tid,
@@ -338,12 +437,46 @@ class MaterialAdminRouteTests(unittest.TestCase):
             main.cfg["orchestrator"]["materials_dir"], tid, payload
         )
         main.store.set_paper(tid, "paper.pdf", digest, len(payload))
-        first = main._approve_manual_artifact(tid, "teacher")
+        testdata = b"fixture tar.gz"
+        testdata_digest = main.hashlib.sha256(testdata).hexdigest()
+        main.save_testdata_archive(
+            main.cfg["orchestrator"]["materials_dir"], tid, testdata
+        )
+        main.store.set_testdata(
+            tid,
+            "testdata.tar.gz",
+            testdata_digest,
+            len(testdata),
+            6,
+            60,
+        )
+        publication_side_effect = lambda **kwargs: self._publication(
+            kwargs["tid"],
+            kwargs["revision"],
+            paper_sha256=kwargs["paper_sha256"],
+            paper_size=len(payload),
+            testdata_sha256=kwargs["testdata_sha256"],
+            testdata_size=len(testdata),
+        )
+        with mock.patch.object(
+            main.material_publisher,
+            "publish",
+            side_effect=publication_side_effect,
+        ):
+            first = main._approve_manual_artifact(tid, "teacher")
 
-        with mock.patch.object(main.hydro, "get_contest", return_value=document):
+        with mock.patch.object(
+            main.hydro, "get_contest", return_value=document
+        ), mock.patch.object(
+            main.hydro, "get_problem", return_value={"docId": 101, "pid": "apple"}
+        ), mock.patch.dict(main.cfg["hydro"], {"submit_enabled": True}), mock.patch.object(
+            main.material_publisher,
+            "publish",
+            side_effect=publication_side_effect,
+        ):
             response = main.admin_register(
                 tid=tid,
-                files="apple",
+                files="apple=101",
                 submission_mode="folder",
                 materials_mode="manual",
                 max_participants=3,
@@ -377,14 +510,23 @@ class MaterialAdminRouteTests(unittest.TestCase):
         }
         self._contest(tid)
         self._revision(tid, "ai-approved")
-        main.store.approve_artifact(tid, "ai-approved", "teacher")
+        main.store.approve_artifact_with_publication(
+            tid,
+            "ai-approved",
+            "teacher",
+            self._publication(tid, "ai-approved"),
+        )
         before = main.store.get_contest(tid)
 
-        with mock.patch.object(main.hydro, "get_contest", return_value=document):
+        with mock.patch.object(
+            main.hydro, "get_contest", return_value=document
+        ), mock.patch.object(
+            main.hydro, "get_problem", return_value={"docId": 101, "pid": "apple"}
+        ), mock.patch.dict(main.cfg["hydro"], {"submit_enabled": True}):
             with self.assertRaisesRegex(HTTPException, "重新上传") as raised:
                 main.admin_register(
                     tid=tid,
-                    files="apple",
+                    files="apple=101",
                     submission_mode="folder",
                     materials_mode="manual",
                     max_participants=3,
@@ -439,9 +581,19 @@ class MaterialAdminRouteTests(unittest.TestCase):
         tid = "d" * 24
         self._contest(tid)
         self._revision(tid, "ai-old")
-        main.store.approve_artifact(tid, "ai-old", "teacher")
+        main.store.approve_artifact_with_publication(
+            tid,
+            "ai-old",
+            "teacher",
+            self._publication(tid, "ai-old"),
+        )
         self._revision(tid, "ai-new")
-        main.store.approve_artifact(tid, "ai-new", "teacher")
+        main.store.approve_artifact_with_publication(
+            tid,
+            "ai-new",
+            "teacher",
+            self._publication(tid, "ai-new"),
+        )
         with mock.patch.object(main, "save_material_paper") as save_paper, mock.patch.object(
             main, "save_testdata_archive"
         ) as save_data:
@@ -877,7 +1029,7 @@ class WebSubmitSessionTests(unittest.TestCase):
         with mock.patch.object(main.hydro, "get_contest", return_value={}):
             self.assertFalse(main._contest_submission_open("a" * 24, now))
 
-    def test_scheduler_fail_safe_collects_when_ready_snapshot_drifts(self):
+    def test_scheduler_follows_authoritative_oj_time_extension(self):
         tid = "c" * 24
         begin = datetime.now(timezone.utc) - timedelta(minutes=5)
         frozen_end = begin + timedelta(hours=5)
@@ -898,17 +1050,53 @@ class WebSubmitSessionTests(unittest.TestCase):
         ), mock.patch.object(
             main.hydro, "get_contest", return_value=changed
         ), mock.patch.object(
-            main.store, "transition", return_value=True
+            main.pipe,
+            "sync_contest_schedule",
+            return_value={"changed": True, "deadline_reached": False},
+        ) as sync_schedule, mock.patch.object(
+            main.store, "transition"
         ) as transition, mock.patch.object(main, "_spawn") as spawn:
             main.tick()
 
-        transition.assert_called_once_with(
+        sync_schedule.assert_called_once_with(
             tid,
-            {"ready"},
-            "collecting",
-            "检测到 Hydro 时间或赛制被修改，已触发保护性收卷",
+            begin_at_ms=int(begin.timestamp() * 1000),
+            end_at_ms=int(changed["endAt"].timestamp() * 1000),
+            hydro_rule="oi",
+            observed_at_ms=mock.ANY,
         )
+        transition.assert_not_called()
+        spawn.assert_not_called()
+
+    def test_scheduler_resumes_interrupted_collection_without_polling_oj(self):
+        tid = "d" * 24
+        contest = {"tid": tid, "state": "collecting"}
+        with mock.patch.object(
+            main.store, "contests", return_value=[contest]
+        ), mock.patch.object(
+            main.pipe, "is_active", return_value=False
+        ), mock.patch.object(
+            main.hydro, "get_contest"
+        ) as get_contest, mock.patch.object(main, "_spawn") as spawn:
+            main.tick()
+
+        get_contest.assert_not_called()
         spawn.assert_called_once_with(main.pipe.collect, tid)
+
+    def test_scheduler_finishes_due_safe_wait_without_polling_oj(self):
+        tid = "e" * 24
+        contest = {"tid": tid, "state": "safe_wait", "shutdown_after_ms": 1}
+        with mock.patch.object(
+            main.store, "contests", return_value=[contest]
+        ), mock.patch.object(
+            main.pipe, "is_active", return_value=False
+        ), mock.patch.object(
+            main.hydro, "get_contest"
+        ) as get_contest, mock.patch.object(main, "_spawn") as spawn:
+            main.tick()
+
+        get_contest.assert_not_called()
+        spawn.assert_called_once_with(main.pipe.finish_safe_wait, tid)
 
 
 class WebSubmitTemplateTests(unittest.TestCase):
@@ -940,12 +1128,21 @@ class WebSubmitTemplateTests(unittest.TestCase):
             latest={},
             opened=True,
             saved="",
+            submit_nonces={"apple": "1" * 32, "banana": "2" * 32},
             now="09:00:00",
         )
-        for text in ("考试须知", "试题下载", "答题", "提交时间", "内容长度"):
+        for text in (
+            "考试须知",
+            "试题下载",
+            "答题",
+            "提交时间",
+            "内容长度",
+            "递交正式文件",
+        ):
             self.assertIn(text, answer)
-        self.assertIn("/edit/apple", answer)
-        self.assertIn("/edit/banana", answer)
+        self.assertIn("/formal/apple", answer)
+        self.assertIn("/formal/banana", answer)
+        self.assertNotIn("/edit/", answer)
 
     def test_login_replaces_a_corrupted_upstream_contest_title(self):
         response = main._web_login_response(
@@ -977,41 +1174,63 @@ class WebSubmitTemplateTests(unittest.TestCase):
         )
 
     def test_admin_shows_final_file_io_mapping_before_generation(self):
-        page = main.ADMIN_PAGE.render(
+        page = main.ADMIN_V1_PAGE.render(
             contests=[
                 {
                     "tid": "7" * 24,
                     "title": "fixture",
-                    "submission_mode": "folder",
-                    "max_participants": 3,
-                    "spare_seats": 1,
-                    "release_lead_minutes": 5,
                     "file_io_preview": [{"slug": "apple", "pid": "P1001"}],
                     "material_state": "pending",
+                    "material_state_label": "等待生成或上传",
                     "materials_mode": "ai",
                     "artifact_job": None,
                     "artifacts": [],
-                    "pool_counts": {},
-                    "pool_revision": None,
-                    "state": "registered",
-                    "message": "",
                 }
             ],
-            cloud_state="STOPPED",
-            cloud_ip="",
+            section="materials",
+            section_label="比赛材料",
+            sections=main.ADMIN_SECTIONS,
             csrf="csrf",
-            mode_labels=main.MODE_LABELS,
-            hydro_public_base_url="https://oj.example.test",
+            oj_base_url="https://oj.example.test",
             defaults={
-                "max_participants": 15,
-                "spare_seats": 2,
                 "release_lead_minutes": 5,
                 "practice_groups": 3,
             },
         )
-        self.assertIn("当前文件读写（生成前请确认）", page)
         self.assertIn("apple.in / apple.out", page)
-        self.assertIn("Hydro P1001", page)
+        self.assertNotIn("服务器", page)
+
+    def test_teacher_ui_has_exactly_five_product_pages_without_infrastructure_controls(self):
+        page = main.ADMIN_V1_PAGE.render(
+            contests=[],
+            section="overview",
+            section_label="比赛总览",
+            sections=main.ADMIN_SECTIONS,
+            csrf="csrf",
+            oj_base_url="https://oj.example.test",
+            defaults={"release_lead_minutes": 5, "practice_groups": 3},
+        )
+        self.assertEqual(
+            list(main.ADMIN_SECTIONS.values()),
+            ["比赛总览", "比赛材料", "学生座位", "递交与评测", "结束与归档"],
+        )
+        for forbidden in (
+            "手动开机",
+            "手动关机",
+            "Caddy",
+            "PM2",
+            "MongoDB",
+            "连接密码",
+        ):
+            self.assertNotIn(forbidden, page)
+        registered = {
+            (route.path, method)
+            for route in main.app.routes
+            for method in getattr(route, "methods", set())
+        }
+        self.assertNotIn(("/admin/boot", "POST"), registered)
+        self.assertNotIn(("/admin/shutdown", "POST"), registered)
+        self.assertNotIn(("/admin/sync-roster", "POST"), registered)
 
     def test_answer_and_view_pages_offer_source_download(self):
         submission = {
@@ -1026,6 +1245,7 @@ class WebSubmitTemplateTests(unittest.TestCase):
             latest={"apple": submission},
             opened=True,
             saved="",
+            submit_nonces={"apple": "a" * 32},
             now="09:00:00",
         )
         view = main.WEB_VIEW_PAGE.render(
@@ -1037,24 +1257,7 @@ class WebSubmitTemplateTests(unittest.TestCase):
             self.assertIn("下载源码", page)
             self.assertIn("/download/apple", page)
 
-    def test_edit_page_uses_pasted_complete_source(self):
-        nonce = "a" * 32
-        page = main.WEB_EDIT_PAGE.render(
-            seat=self.seat,
-            problem="apple",
-            problem_index=1,
-            client_nonce=nonce,
-            now="09:00:00",
-        )
-        self.assertIn("完整源代码", page)
-        self.assertIn('name="code"', page)
-        self.assertIn('enctype="multipart/form-data"', page)
-        self.assertIn('name="source"', page)
-        self.assertIn("上传 .cpp 文件", page)
-        self.assertIn("确认提交", page)
-        self.assertEqual(page.count(f'name="client_nonce" value="{nonce}"'), 2)
-
-    def test_each_edit_page_gets_a_fresh_nonce_for_both_forms(self):
+    def test_legacy_edit_page_redirects_to_single_formal_source_flow(self):
         request = Request(
             {"type": "http", "method": "GET", "path": "/submit/token/edit/apple", "headers": []}
         )
@@ -1064,25 +1267,14 @@ class WebSubmitTemplateTests(unittest.TestCase):
             ["apple"],
             {},
         )
-        first_nonce, second_nonce = "1" * 32, "2" * 32
         with mock.patch.object(
             main, "_web_submit_context", return_value=context
         ), mock.patch.object(
             main, "_submit_authenticated", return_value=True
-        ), mock.patch.object(
-            main, "_submission_window_open", return_value=True
-        ), mock.patch.object(
-            main.RealtimeJudge,
-            "new_client_nonce",
-            side_effect=[first_nonce, second_nonce],
         ):
-            first = main.web_submit_edit(request, "token", "apple")
-            second = main.web_submit_edit(request, "token", "apple")
-        first_page = first.body.decode("utf-8")
-        second_page = second.body.decode("utf-8")
-        self.assertEqual(first_page.count(first_nonce), 2)
-        self.assertEqual(second_page.count(second_nonce), 2)
-        self.assertNotIn(first_nonce, second_page)
+            response = main.web_submit_edit(request, "token", "apple")
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/submit/token")
 
 
 class WebSubmitRealtimeTests(unittest.TestCase):
@@ -1110,6 +1302,47 @@ class WebSubmitRealtimeTests(unittest.TestCase):
 
     def tearDown(self):
         self.window.stop()
+
+    def test_formal_submit_reads_canonical_seat_file_before_enqueue(self):
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/submit/token/formal/apple",
+                "headers": [],
+            }
+        )
+        source = (
+            b'#include <cstdio>\r\nint main(){freopen("apple.in","r",stdin);'
+            b'freopen("apple.out","w",stdout);}\r\n'
+        )
+        context = (self.seat, self.contest, ["apple"], {})
+        with mock.patch.object(
+            main, "_web_submit_context", return_value=context
+        ), mock.patch.object(
+            main, "_submit_authenticated", return_value=True
+        ), mock.patch.object(
+            main, "_submission_window_open", return_value=True
+        ), mock.patch.object(
+            main.pipe, "read_formal_source", return_value=source
+        ) as read_formal, mock.patch.object(
+            main, "_enqueue_web_source"
+        ) as enqueue:
+            response = main.web_submit_formal_file(
+                request, "token", "apple", "a" * 32
+            )
+
+        read_formal.assert_called_once_with(
+            self.contest["tid"], 7, "apple", maximum_bytes=mock.ANY
+        )
+        enqueue.assert_called_once_with(
+            self.seat,
+            self.contest,
+            "apple",
+            source.decode().replace("\r\n", "\n"),
+            "a" * 32,
+        )
+        self.assertEqual(response.status_code, 303)
 
     def test_enqueue_uses_atomic_store_gate_after_source_processing(self):
         judge = mock.Mock()

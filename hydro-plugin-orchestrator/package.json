@@ -2,7 +2,7 @@
   "name": "hydrooj-orchestrator-submit",
   "version": "1.6.2",
   "private": true,
-  "description": "Judge collected submissions, send seat notifications, and clone approved contest-private file-I/O problems",
+  "description": "Publish contest materials, judge submissions, send seat notifications, and clone private file-I/O problems",
   "main": "index.js",
   "scripts": {
     "test": "node --test tests/*.test.js"

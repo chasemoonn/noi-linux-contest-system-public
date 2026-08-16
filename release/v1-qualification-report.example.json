@@ -1,0 +1,23 @@
+{
+  "$schema": "v1-qualification-report.schema.json",
+  "schema_version": 2,
+  "source_revision": "0000000000000000000000000000000000000000",
+  "profile": "aliyun-hydro5-pm2-direct-v1",
+  "components": {
+    "orchestrator_image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "desktop_image_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "desktop_source_revision": "0000000000000000000000000000000000000000",
+    "hydro_plugin_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "evidence": {
+    "linux_ci": {"status": "pending", "reference": null, "evidence_sha256": null},
+    "cross_machine_import_rollback": {"status": "pending", "reference": null, "evidence_sha256": null},
+    "independent_teacher_install": {"status": "pending", "reference": null, "evidence_sha256": null},
+    "single_seat": {"status": "pending", "reference": null, "evidence_sha256": null, "checks": null},
+    "fault_recovery": {"status": "pending", "reference": null, "evidence_sha256": null, "scenarios": null},
+    "ordinary_oj_isolation": {"status": "pending", "reference": null, "evidence_sha256": null, "ordinary_oj_errors": null, "ordinary_oj_restarts": null, "ordinary_oj_pid_changes": null},
+    "capacity_15_plus_2": {"status": "pending", "reference": null, "evidence_sha256": null, "formal_seats": null, "spare_seats": null, "duration_seconds": null, "unexpected_seat_restarts": null, "failed_submissions": null, "failed_collections": null, "verified_seats": null, "spare_takeovers": null, "planned_restart_recoveries": null, "controller_network_recoveries": null, "capacity_margin_accepted": null}
+  },
+  "reviewers": ["pending-reviewer-1", "pending-reviewer-2"],
+  "production_qualified": false
+}

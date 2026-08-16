@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 qualification-only power-loss recovery agent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "qualification_marker", "session_id", "source", "components", "common_library_path", "common_library_sha256", "docker_socket", "app_root", "promotion_script", "promotion_script_sha256", "recovery_script", "recovery_script_sha256", "bash_path", "candidate_tag", "candidate_image_id", "source_root", "source_revision", "old_image_id", "old_source_target", "ready_path", "controller_health", "ordinary_oj", "signer", "signing_public_key", "signing_key_path", "ssh_keygen_path", "lock_path", "state_path", "receipt_path", "output_path"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "source": {"type": "object"}, "components": {"type": "object"},
+    "common_library_path": {"type": "string", "pattern": "^/"},
+    "common_library_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "docker_socket": {"const": "/var/run/docker.sock"},
+    "app_root": {"type": "string", "pattern": "^/"},
+    "promotion_script": {"type": "string", "pattern": "^/"},
+    "promotion_script_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "recovery_script": {"type": "string", "pattern": "^/"},
+    "recovery_script_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "bash_path": {"const": "/bin/bash"},
+    "candidate_tag": {"type": "string"}, "candidate_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "source_root": {"type": "string", "pattern": "^/"}, "source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "old_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "old_source_target": {"type": "string", "pattern": "^image-releases/[A-Za-z0-9TZ-]+$"},
+    "ready_path": {"type": "string", "pattern": "^/root/.+[.]json$"},
+    "controller_health": {"type": "object"}, "ordinary_oj": {"type": "object"},
+    "signer": {"type": "string"}, "signing_public_key": {"type": "string"},
+    "signing_key_path": {"type": "string", "pattern": "^/"}, "ssh_keygen_path": {"type": "string", "pattern": "^/"},
+    "lock_path": {"type": "string", "pattern": "^/"}, "state_path": {"type": "string", "pattern": "^/"},
+    "receipt_path": {"type": "string", "pattern": "^/"}, "output_path": {"type": "string", "pattern": "^/"}
+  }
+}

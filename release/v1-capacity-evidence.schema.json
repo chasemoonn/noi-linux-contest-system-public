@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 fixed 15+2 capacity evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "status", "session_id", "source", "components", "environment", "probes", "window", "seats", "workload", "faults", "isolation", "shutdown", "metrics", "thresholds", "artifacts"],
+  "properties": {
+    "$schema": {"const": "v1-capacity-evidence.schema.json"},
+    "schema_version": {"const": 1},
+    "status": {"const": "passed"},
+    "session_id": {"$ref": "#/$defs/hex64"},
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["revision", "tree"],
+      "properties": {"revision": {"$ref": "#/$defs/hex40"}, "tree": {"$ref": "#/$defs/hex40"}}
+    },
+    "components": {
+      "type": "object", "additionalProperties": false,
+      "required": ["orchestrator_image_digest", "desktop_image_id", "desktop_source_revision", "hydro_plugin_sha256"],
+      "properties": {
+        "orchestrator_image_digest": {"$ref": "#/$defs/digest"},
+        "desktop_image_id": {"$ref": "#/$defs/digest"},
+        "desktop_source_revision": {"$ref": "#/$defs/hex40"},
+        "hydro_plugin_sha256": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profile", "instance_type", "region", "network_profile_sha256"],
+      "properties": {
+        "profile": {"const": "aliyun-hydro5-pm2-direct-v1"},
+        "instance_type": {"type": "string", "minLength": 1, "maxLength": 160},
+        "region": {"type": "string", "minLength": 1, "maxLength": 160},
+        "network_profile_sha256": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "probes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["measurement", "seat_inventory", "workload_events", "fault_events", "ordinary_oj_observations", "shutdown_observation"],
+      "properties": {
+        "measurement": {"$ref": "#/$defs/hex64"},
+        "seat_inventory": {"$ref": "#/$defs/hex64"},
+        "workload_events": {"$ref": "#/$defs/hex64"},
+        "fault_events": {"$ref": "#/$defs/hex64"},
+        "ordinary_oj_observations": {"$ref": "#/$defs/hex64"},
+        "shutdown_observation": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "window": {
+      "type": "object", "additionalProperties": false,
+      "required": ["started_at", "ended_at", "duration_seconds", "sample_interval_seconds", "sample_count"],
+      "properties": {
+        "started_at": {"type": "string", "format": "date-time"},
+        "ended_at": {"type": "string", "format": "date-time"},
+        "duration_seconds": {"type": "integer", "minimum": 3600},
+        "sample_interval_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+        "sample_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "seats": {
+      "type": "object", "additionalProperties": false,
+      "required": ["formal", "spare", "verified", "unique_container_ids", "unexpected_restart_events", "cross_seat_access_failures"],
+      "properties": {
+        "formal": {"const": 15}, "spare": {"const": 2}, "verified": {"const": 17}, "unique_container_ids": {"const": 17},
+        "unexpected_restart_events": {"const": 0}, "cross_seat_access_failures": {"const": 0}
+      }
+    },
+    "workload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["login_successes", "material_open_successes", "compile_successes", "submission_successes", "failed_submissions", "collection_successes", "failed_collections", "final_source_mismatches"],
+      "properties": {
+        "login_successes": {"type": "integer", "minimum": 15},
+        "material_open_successes": {"type": "integer", "minimum": 15},
+        "compile_successes": {"type": "integer", "minimum": 45},
+        "submission_successes": {"type": "integer", "minimum": 45},
+        "failed_submissions": {"const": 0},
+        "collection_successes": {"type": "integer", "minimum": 15},
+        "failed_collections": {"const": 0},
+        "final_source_mismatches": {"const": 0}
+      }
+    },
+    "faults": {
+      "type": "object", "additionalProperties": false,
+      "required": ["spare_takeovers", "spare_takeovers_recovered", "planned_restart_events", "planned_restart_recoveries", "controller_network_interruptions", "controller_network_recoveries"],
+      "properties": {
+        "spare_takeovers": {"type": "integer", "minimum": 1},
+        "spare_takeovers_recovered": {"type": "integer", "minimum": 1},
+        "planned_restart_events": {"type": "integer", "minimum": 1},
+        "planned_restart_recoveries": {"type": "integer", "minimum": 1},
+        "controller_network_interruptions": {"type": "integer", "minimum": 1},
+        "controller_network_recoveries": {"type": "integer", "minimum": 1}
+      }
+    },
+    "isolation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ordinary_oj_errors", "ordinary_oj_restarts", "ordinary_oj_pid_changes", "credential_leaks", "result_leaks"],
+      "properties": {
+        "ordinary_oj_errors": {"const": 0}, "ordinary_oj_restarts": {"const": 0}, "ordinary_oj_pid_changes": {"const": 0}, "credential_leaks": {"const": 0}, "result_leaks": {"const": 0}
+      }
+    },
+    "shutdown": {
+      "type": "object", "additionalProperties": false,
+      "required": ["active_seats", "managed_rules", "conflict_rules", "cloud_state", "delivery_queues", "notification_queues"],
+      "properties": {
+        "active_seats": {"const": 0}, "managed_rules": {"const": 0}, "conflict_rules": {"const": 0}, "cloud_state": {"const": "STOPPED"}, "delivery_queues": {"const": 0}, "notification_queues": {"const": 0}
+      }
+    },
+    "metrics": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_cpu_peak_percent", "host_memory_peak_percent", "container_memory_peak_bytes", "egress_peak_mbps", "rtt_p95_ms", "packet_loss_percent", "websocket_reconnects", "key_to_frame_p50_ms", "key_to_frame_p95_ms"],
+      "properties": {
+        "host_cpu_peak_percent": {"type": "number", "minimum": 0, "maximum": 100},
+        "host_memory_peak_percent": {"type": "number", "minimum": 0, "maximum": 100},
+        "container_memory_peak_bytes": {"type": "number", "exclusiveMinimum": 0},
+        "egress_peak_mbps": {"type": "number", "minimum": 0},
+        "rtt_p95_ms": {"type": "number", "exclusiveMinimum": 0},
+        "packet_loss_percent": {"type": "number", "minimum": 0, "maximum": 100},
+        "websocket_reconnects": {"type": "number", "minimum": 0},
+        "key_to_frame_p50_ms": {"type": "number", "exclusiveMinimum": 0},
+        "key_to_frame_p95_ms": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "thresholds": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_cpu_peak_percent_max", "host_memory_peak_percent_max", "container_memory_peak_bytes_max", "egress_peak_mbps_max", "rtt_p95_ms_max", "packet_loss_percent_max", "websocket_reconnects_max", "key_to_frame_p95_ms_max", "thresholds_sha256", "capacity_margin_accepted"],
+      "properties": {
+        "host_cpu_peak_percent_max": {"type": "number", "minimum": 0},
+        "host_memory_peak_percent_max": {"type": "number", "minimum": 0},
+        "container_memory_peak_bytes_max": {"type": "number", "minimum": 0},
+        "egress_peak_mbps_max": {"type": "number", "minimum": 0},
+        "rtt_p95_ms_max": {"type": "number", "minimum": 0},
+        "packet_loss_percent_max": {"type": "number", "minimum": 0},
+        "websocket_reconnects_max": {"type": "number", "minimum": 0},
+        "key_to_frame_p95_ms_max": {"type": "number", "minimum": 0},
+        "thresholds_sha256": {"$ref": "#/$defs/hex64"},
+        "capacity_margin_accepted": {"const": true}
+      }
+    },
+    "artifacts": {
+      "type": "array", "minItems": 6, "maxItems": 6,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["name", "reference", "sha256", "bytes"],
+        "properties": {
+          "name": {"enum": ["sample_series", "seat_inventory", "workload_events", "fault_events", "ordinary_oj_observations", "shutdown_observation"]},
+          "reference": {"type": "string", "minLength": 1},
+          "sha256": {"$ref": "#/$defs/hex64"},
+          "bytes": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hex40": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "hex64": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+  }
+}

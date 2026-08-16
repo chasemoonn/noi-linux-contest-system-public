@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import io
 import os
 from pathlib import Path
@@ -249,7 +250,15 @@ def read_testdata_upload(
             )
 
         output = io.BytesIO()
-        with tarfile.open(fileobj=output, mode="w:gz") as target_archive:
+        # tarfile's w:gz mode inherits the wall-clock gzip timestamp.  That
+        # made an identical teacher ZIP produce a different approved digest
+        # when it was registered again.  Freeze both archive layers so the
+        # normalized student material is content-addressed and reproducible.
+        with gzip.GzipFile(
+            filename="", fileobj=output, mode="wb", mtime=0
+        ) as compressed, tarfile.open(
+            fileobj=compressed, mode="w"
+        ) as target_archive:
             directories: set[str] = set()
             for _, parts in normalized:
                 for index in range(1, len(parts)):

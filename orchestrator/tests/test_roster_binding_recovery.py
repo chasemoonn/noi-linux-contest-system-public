@@ -1,5 +1,8 @@
 """Crash-recovery regression for pool assignment to legacy-seat projection."""
 from pathlib import Path
+import base64
+import hashlib
+import json
 import tempfile
 import time
 import unittest
@@ -27,44 +30,46 @@ class RosterBindingRecoveryTests(unittest.TestCase):
             end_at_ms=self.begin_at_ms + 3_600_000,
             hydro_rule="oi",
             max_participants=1,
-            spare_seats=0,
+            spare_seats=2,
             release_lead_minutes=5,
         )
         self.store.set_state(self.tid, "ready", "running")
         pool = SeatPoolState.create(
             self.tid,
             max_participants=1,
-            spare_count=0,
+            spare_count=2,
             begin_at_ms=self.begin_at_ms,
         )
-        pool = pool.mark_warming(
-            1,
-            now_ms=now_ms,
-            command_id="warm:1",
-            expected_revision=pool.revision,
-        ).state
-        pool = pool.mark_verified(
-            1,
-            container_ref="container-1",
-            image_digest="sha256:image",
-            material_digest="sha256:material",
-            now_ms=now_ms,
-            command_id="verify:1",
-            expected_revision=pool.revision,
-        ).state
+        for slot_no in (1, 2, 3):
+            pool = pool.mark_warming(
+                slot_no,
+                now_ms=now_ms,
+                command_id=f"warm:{slot_no}",
+                expected_revision=pool.revision,
+            ).state
+            pool = pool.mark_verified(
+                slot_no,
+                container_ref=f"container-{slot_no}",
+                image_digest="sha256:image",
+                material_digest="sha256:material",
+                now_ms=now_ms,
+                command_id=f"verify:{slot_no}",
+                expected_revision=pool.revision,
+            ).state
         self.store.put_seat_pool(self.tid, None, pool.to_dict())
-        self.store.put_seat_pool_resource(
-            self.tid,
-            1,
-            token="stable-seat-token",
-            vnc_pass="stable-vnc",
-            submit_token="stable-submit-token",
-            candidate="CSP001",
-            container="container-1",
-            cip="172.18.0.2",
-            image_digest="sha256:image",
-            material_digest="sha256:material",
-        )
+        for slot_no in (1, 2, 3):
+            self.store.put_seat_pool_resource(
+                self.tid,
+                slot_no,
+                token=f"stable-seat-token-{slot_no}",
+                vnc_pass=f"stable-vnc-{slot_no}",
+                submit_token=f"stable-submit-token-{slot_no}",
+                candidate=f"CSP{slot_no:03d}",
+                container=f"container-{slot_no}",
+                cip=f"172.18.0.{slot_no + 1}",
+                image_digest="sha256:image",
+                material_digest="sha256:material",
+            )
         self.hydro = mock.Mock()
         self.hydro.roster.return_value = [{"uid": 7, "uname": "alice"}]
         self.pipeline = Pipeline(
@@ -97,7 +102,7 @@ class RosterBindingRecoveryTests(unittest.TestCase):
             self.assertIsNotNone(after_failure)
             self.assertEqual(after_failure["slot_no"], 1)
             self.assertEqual(
-                after_failure["resource"]["token"], "stable-seat-token"
+                after_failure["resource"]["token"], "stable-seat-token-1"
             )
             persisted_revision = self.store.seat_pool(self.tid)["revision"]
             self.assertIsNone(self.store.seat_by_uname(self.tid, "alice"))
@@ -108,7 +113,7 @@ class RosterBindingRecoveryTests(unittest.TestCase):
         self.assertEqual(self.store.seat_pool(self.tid)["revision"], persisted_revision)
         repaired = self.store.seat_pool_assignment(self.tid, 7)
         self.assertEqual(repaired["slot_no"], 1)
-        self.assertEqual(repaired["resource"]["token"], "stable-seat-token")
+        self.assertEqual(repaired["resource"]["token"], "stable-seat-token-1")
 
         # Student query reads the legacy row, while notification reads the
         # pool resource.  Both projections must now expose the same complete
@@ -157,6 +162,125 @@ class RosterBindingRecoveryTests(unittest.TestCase):
         self.assertEqual(
             self.store.seat_pool_assignment(self.tid, 7)["state"], "released"
         )
+
+    def test_roster_target_triggers_automatic_append_without_teacher_gate(self):
+        roster = [
+            {"uid": uid, "uname": f"student-{uid}"}
+            for uid in range(1, 22)
+        ]
+        self.pipeline.grow_pool = mock.Mock(
+            return_value={
+                "replayed": False,
+                "revision": self.store.seat_pool(self.tid)["revision"] + 1,
+                "added": list(range(4, 25)),
+                "counts": {},
+            }
+        )
+
+        result = self.pipeline._ensure_automatic_roster_capacity(self.tid, roster)
+
+        self.assertTrue(result["grown"])
+        self.pipeline.grow_pool.assert_called_once_with(
+            self.tid,
+            additional_main=20,
+            additional_spares=1,
+            expected_revision=self.store.seat_pool(self.tid)["revision"],
+        )
+
+    def test_roster_target_never_shrinks_existing_pool(self):
+        result = self.pipeline._ensure_automatic_roster_capacity(
+            self.tid, [{"uid": 7, "uname": "alice"}]
+        )
+        self.assertEqual(result, {"grown": False, "added": []})
+
+    def test_duplicate_roster_identity_is_rejected_before_growth(self):
+        with self.assertRaisesRegex(RuntimeError, "重复账号"):
+            self.pipeline._validate_roster(
+                [
+                    {"uid": 7, "uname": "alice"},
+                    {"uid": 7, "uname": "other"},
+                ]
+            )
+
+
+class FormalSourceReadTests(unittest.TestCase):
+    def setUp(self):
+        self.tid = "f" * 24
+        self.store = mock.Mock()
+        self.store.get_contest.return_value = {
+            "tid": self.tid,
+            "state": "ready",
+            "files": '["apple"]',
+        }
+        self.store.seat_pool_assignment.return_value = {
+            "state": "released",
+            "container_ref": "seat-ffffffff-slot-003",
+            "resource": {
+                "container": "seat-ffffffff-slot-003",
+                "candidate": "CSP003",
+            },
+        }
+        self.cvm = mock.Mock()
+        self.cvm.status.return_value = ("RUNNING", "203.0.113.8")
+        self.remote = mock.Mock()
+        self.remote.wait_ssh.return_value = True
+        self.source = b"int main(){return 0;}\n"
+        self.remote.run.return_value = json.dumps(
+            {
+                "schema": 1,
+                "size": len(self.source),
+                "sha256": hashlib.sha256(self.source).hexdigest(),
+                "base64": base64.b64encode(self.source).decode(),
+            }
+        )
+        self.pipeline = Pipeline({}, self.cvm, mock.Mock(), self.store, mock.Mock())
+        self.pipeline._remote = mock.Mock(return_value=self.remote)
+
+    def test_reads_only_the_exact_released_csp_path(self):
+        payload = self.pipeline.read_formal_source(
+            self.tid, 7, "apple", maximum_bytes=1024
+        )
+        self.assertEqual(payload, self.source)
+        command = self.remote.run.call_args.args[0]
+        self.assertIn("seat-ffffffff-slot-003", command)
+        self.assertIn("/usr/local/bin/capture-formal-source.py", command)
+        self.assertIn("/home/student/答案", command)
+        self.assertIn("CSP003", command)
+        self.assertIn("apple", command)
+
+    def test_invalid_base64_is_rejected_and_process_lock_is_released(self):
+        self.remote.run.return_value = "not-base64!"
+        with self.assertRaisesRegex(RuntimeError, "读取结果无效"):
+            self.pipeline.read_formal_source(
+                self.tid, 7, "apple", maximum_bytes=1024
+            )
+        self.remote.run.return_value = json.dumps(
+            {
+                "schema": 1,
+                "size": len(self.source),
+                "sha256": hashlib.sha256(self.source).hexdigest(),
+                "base64": base64.b64encode(self.source).decode(),
+            }
+        )
+        self.assertEqual(
+            self.pipeline.read_formal_source(
+                self.tid, 7, "apple", maximum_bytes=1024
+            ),
+            self.source,
+        )
+
+    def test_snapshot_digest_or_size_mismatch_is_rejected(self):
+        envelope = {
+            "schema": 1,
+            "size": len(self.source),
+            "sha256": "0" * 64,
+            "base64": base64.b64encode(self.source).decode(),
+        }
+        self.remote.run.return_value = json.dumps(envelope)
+        with self.assertRaisesRegex(RuntimeError, "稳定快照校验失败"):
+            self.pipeline.read_formal_source(
+                self.tid, 7, "apple", maximum_bytes=1024
+            )
 
 
 if __name__ == "__main__":

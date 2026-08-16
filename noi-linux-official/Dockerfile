@@ -6,14 +6,6 @@ FROM ${NOI_ROOTFS_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG NOI_SOURCE_REVISION
-RUN [[ "${NOI_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]
-
-# Orchestration fails closed unless the desktop implements this versioned
-# finalizer-status protocol.
-LABEL org.noi.desktop.contract="finalizer-status-v1" \
-      org.opencontainers.image.revision="${NOI_SOURCE_REVISION}"
-
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     LANG=zh_CN.UTF-8 \
@@ -42,8 +34,20 @@ RUN [[ "${APT_MIRROR}" =~ ^[A-Za-z0-9.-]+$ ]] \
  && ln -s /etc/machine-id /var/lib/dbus/machine-id
 
 COPY rootfs/ /
-RUN chmod 0755 /usr/local/bin/contest-entrypoint.sh /usr/local/bin/start-contest-vnc.sh \
+# COPY preserves directory modes from the build context.  Release sources are
+# intentionally staged below a root-only directory, so without this explicit
+# normalization Docker can replace official /usr, /etc, or /opt modes with
+# 0700 and make the desktop unusable by the student account.
+RUN chmod 0755 \
+    /etc /etc/supervisor /etc/supervisor/conf.d /etc/xdg /etc/xdg/autostart \
+    /opt /opt/contest-template /opt/contest-template/Desktop \
+    /usr /usr/local /usr/local/bin \
+ && chmod 0644 \
+    /etc/supervisor/conf.d/contest.conf \
+    /etc/xdg/autostart/noi-contest-desktop-finalize.desktop \
+ && chmod 0755 /usr/local/bin/contest-entrypoint.sh /usr/local/bin/start-contest-vnc.sh \
     /usr/local/bin/configure-contest-desktop.sh /usr/local/bin/finalize-contest-session.sh \
+    /usr/local/bin/capture-formal-source.py \
     /usr/local/bin/install-firefox-cookie-policy.py \
     /usr/local/bin/verify-firefox-cookie-runtime.py \
  && find /opt/contest-template/Desktop -type f -name '*.desktop' -exec chmod 0755 {} +
@@ -52,6 +56,21 @@ RUN chmod 0755 /usr/local/bin/contest-entrypoint.sh /usr/local/bin/start-contest
 # fields into the base image's policy document; malformed, conflicting, or
 # ambiguous multi-source policy state must stop the build.
 RUN python3 /usr/local/bin/install-firefox-cookie-policy.py
+
+# Keep the mutable source identity after all expensive filesystem layers.
+# A new audited source revision must change the immutable image identity, but
+# must not force the official ISO import and desktop package installation to be
+# repeated when their inputs are unchanged.
+ARG NOI_SOURCE_REVISION
+ARG NOI_ISO_SHA256
+RUN [[ "${NOI_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]] \
+ && [[ "${NOI_ISO_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+
+# Orchestration fails closed unless the desktop implements this versioned
+# finalizer-status protocol.
+LABEL org.noi.desktop.contract="finalizer-status-v1" \
+      org.noi.iso.sha256="${NOI_ISO_SHA256}" \
+      org.opencontainers.image.revision="${NOI_SOURCE_REVISION}"
 
 EXPOSE 6080
 ENTRYPOINT ["/usr/local/bin/contest-entrypoint.sh"]

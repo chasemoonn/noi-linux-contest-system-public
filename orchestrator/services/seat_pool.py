@@ -14,6 +14,8 @@ from typing import Any, Callable
 
 
 DEFAULT_RELEASE_LEAD_MS = 5 * 60 * 1000
+DEFAULT_MINIMUM_SPARES = 2
+DEFAULT_SPARE_PERCENT = 10
 SEAT_STATES = (
     "planned",
     "warming",
@@ -115,15 +117,23 @@ def _validate_int(name: str, value: int, *, minimum: int = 0) -> int:
     return value
 
 
-def reservation_state(
-    *, now_ms: int, release_at_ms: int, begin_at_ms: int, teacher_approved: bool = False
-) -> str:
+def reservation_state(*, now_ms: int, release_at_ms: int) -> str:
     """Return the initial participant state at a schedule boundary."""
-    if now_ms >= begin_at_ms and not teacher_approved:
-        raise TeacherApprovalRequiredError(
-            "contest has started; teacher approval is required"
-        )
     return "released" if now_ms >= release_at_ms else "reserved"
+
+
+def desired_capacity(
+    participant_count: int,
+    *,
+    minimum_spares: int = DEFAULT_MINIMUM_SPARES,
+    spare_percent: int = DEFAULT_SPARE_PERCENT,
+) -> tuple[int, int]:
+    """Return the automatic formal and standby seat targets for one roster."""
+    participants = _validate_int("participant_count", participant_count)
+    minimum = _validate_int("minimum_spares", minimum_spares)
+    percent = _validate_int("spare_percent", spare_percent)
+    proportional = (participants * percent + 99) // 100
+    return participants, max(minimum, proportional)
 
 
 @dataclass(frozen=True)
@@ -150,12 +160,10 @@ class SeatPoolState:
     ) -> "SeatPoolState":
         if not isinstance(tid, str) or not tid.strip():
             raise PoolConfigurationError("tid cannot be empty")
-        maximum = _validate_int("max_participants", max_participants, minimum=1)
+        maximum = _validate_int("max_participants", max_participants)
         spares = _validate_int("spare_count", spare_count)
         begin = _validate_int("begin_at_ms", begin_at_ms, minimum=1)
         lead = _validate_int("release_lead_ms", release_lead_ms)
-        if spares > maximum:
-            raise PoolConfigurationError("spare_count cannot exceed max_participants")
         if lead >= begin:
             raise PoolConfigurationError("release time cannot precede Unix epoch")
         seats = tuple(
@@ -328,7 +336,6 @@ class SeatPoolState:
         uname: str,
         *,
         now_ms: int,
-        teacher_approved: bool = False,
         command_id: str,
         expected_revision: int,
     ) -> TransitionResult:
@@ -336,8 +343,7 @@ class SeatPoolState:
         uname = uname.strip()
         if not uname:
             raise PoolConfigurationError("uname cannot be empty")
-        args = {"uid": uid, "uname": uname, "now_ms": now_ms,
-                "teacher_approved": bool(teacher_approved)}
+        args = {"uid": uid, "uname": uname, "now_ms": now_ms}
 
         def mutate(seats):
             existing = next((seat for seat in seats if seat.uid == uid), None)
@@ -345,10 +351,9 @@ class SeatPoolState:
                 if existing.uname != uname:
                     raise CommandConflictError("uid already has another username")
                 return seats, asdict(existing), {}
-            target = reservation_state(now_ms=now_ms,
-                                       release_at_ms=self.release_at_ms,
-                                       begin_at_ms=self.begin_at_ms,
-                                       teacher_approved=teacher_approved)
+            target = reservation_state(
+                now_ms=now_ms, release_at_ms=self.release_at_ms
+            )
             if sum(seat.uid is not None for seat in seats) >= self.max_participants:
                 raise CapacityExceededError("maximum participant count reached")
             available = sorted(
@@ -435,10 +440,9 @@ class SeatPoolState:
             replacement = None
             target = None
             if failed.uid is not None:
-                target = reservation_state(now_ms=now_ms,
-                                           release_at_ms=self.release_at_ms,
-                                           begin_at_ms=self.begin_at_ms,
-                                           teacher_approved=teacher_approved)
+                target = reservation_state(
+                    now_ms=now_ms, release_at_ms=self.release_at_ms
+                )
                 if failed.state == "released":
                     target = "released"
                 replacement = next(
@@ -447,7 +451,8 @@ class SeatPoolState:
                 )
                 if replacement is None:
                     raise NoSpareSeatError("no verified spare is available")
-            reset = replace(failed, state="planned", uid=None, uname="",
+            reset = replace(failed, role="spare" if replacement is not None else failed.role,
+                            state="planned", uid=None, uname="",
                             container_ref="", image_digest="", material_digest="",
                             failure_count=failed.failure_count + 1, last_error=reason,
                             reserved_at_ms=None, released_at_ms=None,
@@ -455,7 +460,7 @@ class SeatPoolState:
             output = self._replace_seat(seats, reset)
             if replacement is None:
                 return output, {"failed": asdict(reset), "replacement": None}, {}
-            moved = replace(replacement, state=target, uid=failed.uid,
+            moved = replace(replacement, role=failed.role, state=target, uid=failed.uid,
                             uname=failed.uname, reserved_at_ms=now_ms,
                             released_at_ms=now_ms if target == "released" else None)
             output = self._replace_seat(output, moved)
@@ -470,23 +475,15 @@ class SeatPoolState:
         *,
         additional_main: int = 0,
         additional_spares: int = 1,
-        teacher_approved: bool,
         command_id: str,
         expected_revision: int,
     ) -> TransitionResult:
         """Append capacity without changing any existing slot or assignment."""
         mains = _validate_int("additional_main", additional_main)
         spares = _validate_int("additional_spares", additional_spares)
-        if not teacher_approved:
-            raise TeacherApprovalRequiredError("teacher approval is required to grow")
         if mains + spares == 0:
             raise PoolConfigurationError("grow must add at least one seat")
-        if self.spare_count + spares > self.max_participants + mains:
-            raise PoolConfigurationError(
-                "resulting spare_count cannot exceed max_participants"
-            )
-        args = {"additional_main": mains, "additional_spares": spares,
-                "teacher_approved": True}
+        args = {"additional_main": mains, "additional_spares": spares}
 
         def mutate(seats):
             added = []
@@ -504,6 +501,113 @@ class SeatPoolState:
 
         return self._apply(operation="grow", arguments=args, command_id=command_id,
                            expected_revision=expected_revision, mutate=mutate)
+
+    def reconcile_roster_capacity(
+        self,
+        participant_count: int,
+        *,
+        minimum_spares: int = DEFAULT_MINIMUM_SPARES,
+        spare_percent: int = DEFAULT_SPARE_PERCENT,
+        command_id: str,
+        expected_revision: int,
+    ) -> TransitionResult:
+        """Grow toward the roster target without shrinking or moving assignments."""
+        target_main, target_spares = desired_capacity(
+            participant_count,
+            minimum_spares=minimum_spares,
+            spare_percent=spare_percent,
+        )
+        additional_main = max(0, target_main - self.max_participants)
+        additional_spares = max(0, target_spares - self.spare_count)
+        args = {
+            "participant_count": int(participant_count),
+            "minimum_spares": int(minimum_spares),
+            "spare_percent": int(spare_percent),
+        }
+        if additional_main + additional_spares == 0:
+            return TransitionResult(
+                self,
+                {
+                    "revision": self.revision,
+                    "added": [],
+                    "target_main": target_main,
+                    "target_spares": target_spares,
+                },
+            )
+
+        def mutate(seats):
+            added = []
+            next_slot = max((seat.slot_no for seat in seats), default=0) + 1
+            for role, count in (
+                ("primary", additional_main),
+                ("spare", additional_spares),
+            ):
+                for _ in range(count):
+                    seat = Seat(next_slot, f"seat-{next_slot:03d}", role)
+                    seats.append(seat)
+                    added.append(asdict(seat))
+                    next_slot += 1
+            return seats, {
+                "added": added,
+                "target_main": target_main,
+                "target_spares": target_spares,
+            }, {
+                "max_participants": self.max_participants + additional_main,
+                "spare_count": self.spare_count + additional_spares,
+            }
+
+        return self._apply(
+            operation="reconcile_roster_capacity",
+            arguments=args,
+            command_id=command_id,
+            expected_revision=expected_revision,
+            mutate=mutate,
+        )
+
+    def reschedule(
+        self,
+        *,
+        begin_at_ms: int,
+        release_lead_ms: int = DEFAULT_RELEASE_LEAD_MS,
+        command_id: str,
+        expected_revision: int,
+    ) -> TransitionResult:
+        """Update future release boundaries without moving existing seats."""
+        begin = _validate_int("begin_at_ms", begin_at_ms, minimum=1)
+        lead = _validate_int("release_lead_ms", release_lead_ms)
+        if lead >= begin:
+            raise PoolConfigurationError("release time cannot precede Unix epoch")
+        release = begin - lead
+        if begin == self.begin_at_ms and release == self.release_at_ms:
+            return TransitionResult(
+                self,
+                {
+                    "revision": self.revision,
+                    "begin_at_ms": begin,
+                    "release_at_ms": release,
+                },
+            )
+        args = {
+            "begin_at_ms": begin,
+            "release_lead_ms": lead,
+        }
+
+        def mutate(seats):
+            return seats, {
+                "begin_at_ms": begin,
+                "release_at_ms": release,
+            }, {
+                "begin_at_ms": begin,
+                "release_at_ms": release,
+            }
+
+        return self._apply(
+            operation="reschedule",
+            arguments=args,
+            command_id=command_id,
+            expected_revision=expected_revision,
+            mutate=mutate,
+        )
 
     def freeze(
         self, *, now_ms: int, command_id: str, expected_revision: int

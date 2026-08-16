@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 clean install qualification matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "source", "components", "plan", "session_id", "qualification_marker", "observed_at", "host", "success", "rollback_scenarios"],
+  "properties": {
+    "$schema": {"const": "v1-clean-install-rehearsal-matrix.schema.json"},
+    "schema_version": {"const": 2},
+    "source": {"type": "object", "additionalProperties": false, "required": ["revision", "tree"], "properties": {"revision": {"$ref": "#/$defs/hex40"}, "tree": {"$ref": "#/$defs/hex40"}}},
+    "components": {"type": "object", "additionalProperties": false, "required": ["orchestrator_image_digest", "desktop_image_id", "desktop_source_revision", "hydro_plugin_sha256"], "properties": {"orchestrator_image_digest": {"$ref": "#/$defs/digest"}, "desktop_image_id": {"$ref": "#/$defs/digest"}, "desktop_source_revision": {"$ref": "#/$defs/hex40"}, "hydro_plugin_sha256": {"$ref": "#/$defs/hex64"}}},
+    "plan": {"type": "object", "additionalProperties": false, "required": ["plan_id"], "properties": {"plan_id": {"$ref": "#/$defs/hex64"}}},
+    "session_id": {"$ref": "#/$defs/hex64"},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "host": {"type": "object", "additionalProperties": false, "required": ["anonymous_id", "architecture", "kernel", "os_release_sha256"], "properties": {"anonymous_id": {"$ref": "#/$defs/hex64"}, "architecture": {"type": "string", "minLength": 1}, "kernel": {"type": "string", "minLength": 1}, "os_release_sha256": {"$ref": "#/$defs/hex64"}}},
+    "success": {"type": "object", "additionalProperties": false, "required": ["terminal", "controller_healthy", "closed_frontend", "active_seats", "managed_rules", "cloud_state", "pending_markers", "ordinary_oj_errors", "ordinary_oj_restarts", "ordinary_oj_pid_changes", "private_plan_sha256", "backup_manifest_sha256", "fresh_baseline_sha256", "ordinary_oj_before_sha256", "ordinary_oj_after_sha256", "execution_log_sha256", "terminal_receipt_sha256"], "properties": {"terminal": {"const": "committed"}, "controller_healthy": {"const": true}, "closed_frontend": {"const": true}, "active_seats": {"const": 0}, "managed_rules": {"const": 0}, "cloud_state": {"const": "STOPPED"}, "pending_markers": {"const": 0}, "ordinary_oj_errors": {"const": 0}, "ordinary_oj_restarts": {"const": 0}, "ordinary_oj_pid_changes": {"const": 0}, "private_plan_sha256": {"$ref": "#/$defs/hex64"}, "backup_manifest_sha256": {"$ref": "#/$defs/hex64"}, "fresh_baseline_sha256": {"$ref": "#/$defs/hex64"}, "ordinary_oj_before_sha256": {"$ref": "#/$defs/hex64"}, "ordinary_oj_after_sha256": {"$ref": "#/$defs/hex64"}, "execution_log_sha256": {"$ref": "#/$defs/hex64"}, "terminal_receipt_sha256": {"$ref": "#/$defs/hex64"}}},
+    "rollback_scenarios": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/rollback"}}
+  },
+  "$defs": {
+    "hex40": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "hex64": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "rollback": {"type": "object", "additionalProperties": false, "required": ["kind", "phase", "terminal", "clean_target", "caddy_restored", "hydro_restored", "controller_absent", "cloud_state", "pending_markers", "ordinary_oj_errors", "ordinary_oj_restarts", "ordinary_oj_pid_changes", "private_plan_sha256", "backup_manifest_sha256", "fresh_baseline_sha256", "ordinary_oj_before_sha256", "ordinary_oj_after_sha256", "execution_log_sha256", "terminal_receipt_sha256"], "properties": {"kind": {"enum": ["phase_failure", "power_loss"]}, "phase": {"enum": ["source_release", "clean_materials", "hydro_integration", "closed_frontend", "controller", "post_install_verification"]}, "terminal": {"const": "rollback_verified"}, "clean_target": {"const": true}, "caddy_restored": {"const": true}, "hydro_restored": {"const": true}, "controller_absent": {"const": true}, "cloud_state": {"const": "STOPPED"}, "pending_markers": {"const": 0}, "ordinary_oj_errors": {"const": 0}, "ordinary_oj_restarts": {"const": 0}, "ordinary_oj_pid_changes": {"const": 0}, "private_plan_sha256": {"$ref": "#/$defs/hex64"}, "backup_manifest_sha256": {"$ref": "#/$defs/hex64"}, "fresh_baseline_sha256": {"$ref": "#/$defs/hex64"}, "ordinary_oj_before_sha256": {"$ref": "#/$defs/hex64"}, "ordinary_oj_after_sha256": {"$ref": "#/$defs/hex64"}, "execution_log_sha256": {"$ref": "#/$defs/hex64"}, "terminal_receipt_sha256": {"$ref": "#/$defs/hex64"}}}
+  }
+}

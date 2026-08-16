@@ -16,6 +16,7 @@ from services.pipeline import (
     NGINX_CONF,
     NGINX_LOCATION,
     Pipeline,
+    _remote_readonly,
     candidate_id,
     gateway_base_url,
     novnc_path,
@@ -23,7 +24,36 @@ from services.pipeline import (
     rand_password,
     safe_extract,
 )
+from services.seat_pool import SeatPoolState
 from services.store import Store
+
+
+class RemoteReadonlyRetryTests(unittest.TestCase):
+    @patch("services.pipeline.time.sleep", return_value=None)
+    def test_retries_only_ambiguous_minus_one(self, _sleep):
+        remote = MagicMock()
+        remote.run.side_effect = [
+            RuntimeError("远程命令失败(-1): docker inspect"),
+            "sha256:ok\n",
+        ]
+        self.assertEqual(_remote_readonly(remote, "docker inspect"), "sha256:ok\n")
+        self.assertEqual(remote.run.call_count, 2)
+
+    @patch("services.pipeline.time.sleep", return_value=None)
+    def test_does_not_retry_real_remote_failure(self, _sleep):
+        remote = MagicMock()
+        remote.run.side_effect = RuntimeError("远程命令失败(1): docker inspect")
+        with self.assertRaisesRegex(RuntimeError, r"失败\(1\)"):
+            _remote_readonly(remote, "docker inspect")
+        self.assertEqual(remote.run.call_count, 1)
+
+    @patch("services.pipeline.time.sleep", return_value=None)
+    def test_timeout_is_bounded(self, _sleep):
+        remote = MagicMock()
+        remote.run.side_effect = TimeoutError("read timed out")
+        with self.assertRaises(TimeoutError):
+            _remote_readonly(remote, "docker inspect")
+        self.assertEqual(remote.run.call_count, 3)
 
 
 class FakeCVM:
@@ -71,6 +101,7 @@ class DirectFakeCVM(FakeCVM):
             "managed_count": 1,
             "conflict_count": 0,
             "management_healthy": True,
+            "instance_state": self.state,
         }
 
     def revoke_desktop_access(self):
@@ -108,6 +139,7 @@ class DirectFakeCVM(FakeCVM):
 class FakeRemote:
     def __init__(self, files=("apple",)):
         self.commands = []
+        self.timeouts = []
         self.files = files
         self.uploads = []
         self.contents = []
@@ -121,6 +153,7 @@ class FakeRemote:
 
     def run(self, command, timeout=300):
         self.commands.append(command)
+        self.timeouts.append(timeout)
         if "org.noi.desktop.contract" in command:
             return f"{self.image_id} {self.image_contract}\n"
         if "IPAM.Config" in command:
@@ -179,16 +212,119 @@ def pipeline_config(root: Path) -> dict:
         "orchestrator": {
             "collected_dir": str(root / "collected"),
             "materials_dir": str(root / "materials"),
-            "deployment_lock": str(root / "runtime" / "deploy-image.lock"),
+            "artifact_root": str(root / "artifacts"),
+            # Unit tests exercise pipeline semantics without taking the
+            # Linux-only cross-process deployment lock.  Qualification runs
+            # use the real configured lock on Linux.
+            "deployment_lock": "",
             "public_base_url": "https://exam.example.test",
             "auto_shutdown_after_collect": True,
-            "shutdown_on_collect_error": True,
+            "shutdown_grace_minutes": 30,
+            "shutdown_on_collect_error": False,
             "shutdown_on_prepare_error": True,
         },
     }
 
 
+class DeploymentLockPlatformTests(unittest.TestCase):
+    def test_configured_lock_fails_closed_without_fcntl(self):
+        pipe = object.__new__(Pipeline)
+        pipe.cfg = {
+            "orchestrator": {"deployment_lock": "/runtime/deploy-image.lock"}
+        }
+        with patch("services.pipeline.fcntl", None):
+            with self.assertRaisesRegex(RuntimeError, "仅支持 Linux"):
+                pipe._acquire_deployment_lock()
+
+    def test_explicitly_disabled_lock_is_a_unit_test_noop(self):
+        pipe = object.__new__(Pipeline)
+        pipe.cfg = {"orchestrator": {"deployment_lock": ""}}
+        with patch("services.pipeline.fcntl", None):
+            self.assertIsNone(pipe._acquire_deployment_lock())
+
+
+def approve_v1_material_fixture(
+    store: Store,
+    root: Path,
+    tid: str,
+    paper: bytes,
+    testdata: bytes,
+    *,
+    testdata_files: int,
+    testdata_expanded_size: int,
+) -> None:
+    """Create the same immutable artifact/publication binding used in V1."""
+    revision = "v1-fixture"
+    artifact_root = root / "artifacts" / tid / revision
+    student = artifact_root / "student"
+    student.mkdir(parents=True, exist_ok=True)
+    (student / "paper.pdf").write_bytes(paper)
+    (student / "testdata.tar.gz").write_bytes(testdata)
+    paper_sha256 = hashlib.sha256(paper).hexdigest()
+    testdata_sha256 = hashlib.sha256(testdata).hexdigest()
+    store.put_artifact_revision(
+        tid,
+        revision,
+        state="review",
+        source_sha256="1" * 64,
+        root_path=str(artifact_root),
+        manifest_sha256="2" * 64,
+        manifest={"schema_version": 1},
+        paper_name="paper.pdf",
+        paper_sha256=paper_sha256,
+        paper_size=len(paper),
+        testdata_name="testdata.tar.gz",
+        testdata_sha256=testdata_sha256,
+        testdata_size=len(testdata),
+        testdata_files=testdata_files,
+        testdata_expanded_size=testdata_expanded_size,
+    )
+    receipt = {
+        "publication_id": hashlib.sha256(
+            f"{tid}:{revision}".encode("ascii")
+        ).hexdigest(),
+        "tid": tid,
+        "revision": revision,
+        "attachments": [
+            {
+                "name": "01_比赛题面.pdf",
+                "sha256": paper_sha256,
+                "size": len(paper),
+            },
+            {
+                "name": "02_辅助自测数据.tar.gz",
+                "sha256": testdata_sha256,
+                "size": len(testdata),
+            },
+        ],
+    }
+    store.approve_artifact_with_publication(
+        tid,
+        revision,
+        "fixture",
+        {
+            "ok": True,
+            **receipt,
+            "receipt_sha256": store._canonical_json_sha256(receipt),
+        },
+    )
+
+
 class FrontendReconciliationTests(unittest.TestCase):
+    @staticmethod
+    def _calling_thread_monotonic(values):
+        """Keep a patched clock from being consumed by unrelated workers."""
+        caller = threading.get_ident()
+        sequence = iter(values)
+        real_monotonic = time.monotonic
+
+        def monotonic():
+            if threading.get_ident() == caller:
+                return next(sequence)
+            return real_monotonic()
+
+        return monotonic
+
     @staticmethod
     def _pipeline(root: Path, cvm) -> Pipeline:
         pipe = Pipeline(
@@ -324,7 +460,8 @@ class FrontendReconciliationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             pipe = self._pipeline(Path(directory), cvm)
             with patch(
-                "services.pipeline.time.monotonic", side_effect=[0, 0, 121]
+                "services.pipeline.time.monotonic",
+                side_effect=self._calling_thread_monotonic([0, 0, 121]),
             ), patch("services.pipeline.time.sleep"):
                 with self.assertRaisesRegex(TimeoutError, "STARTING"):
                     pipe._stop_server_best_effort()
@@ -337,7 +474,8 @@ class FrontendReconciliationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             pipe = self._pipeline(Path(directory), cvm)
             with patch(
-                "services.pipeline.time.monotonic", side_effect=[0, 0, 121]
+                "services.pipeline.time.monotonic",
+                side_effect=self._calling_thread_monotonic([0, 0, 121]),
             ), patch("services.pipeline.time.sleep"):
                 with self.assertRaisesRegex(TimeoutError, "RUNNING"):
                     pipe._stop_server_best_effort()
@@ -365,7 +503,8 @@ class FrontendReconciliationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             pipe = self._pipeline(Path(directory), cvm)
             with patch(
-                "services.pipeline.time.monotonic", side_effect=[0, 0, 121]
+                "services.pipeline.time.monotonic",
+                side_effect=self._calling_thread_monotonic([0, 0, 121]),
             ), patch("services.pipeline.time.sleep"):
                 with self.assertRaisesRegex(TimeoutError, "STOPPING"):
                     pipe._stop_server_best_effort()
@@ -459,6 +598,35 @@ class FrontendReconciliationTests(unittest.TestCase):
 
 
 class PipelineHelpersTests(unittest.TestCase):
+    def test_remote_material_upload_atomically_replaces_readonly_retry_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            local = Path(directory) / "paper.pdf"
+            payload = b"%PDF-1.7\nretry-safe"
+            local.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            remote = FakeRemote()
+            remote.paper_digest = digest
+
+            Pipeline._put_remote_verified_file(
+                remote,
+                local,
+                "/data/seats/test/materials/paper.pdf",
+                digest,
+            )
+
+            self.assertEqual(len(remote.uploads), 1)
+            self.assertRegex(
+                remote.uploads[0][1],
+                r"/paper\.pdf\.upload-[a-f0-9]{24}$",
+            )
+            self.assertNotEqual(
+                remote.uploads[0][1],
+                "/data/seats/test/materials/paper.pdf",
+            )
+            commit = next(command for command in remote.commands if "mv -f --" in command)
+            self.assertIn("chmod 0444", commit)
+            self.assertIn("/data/seats/test/materials/paper.pdf", commit)
+
     def test_gateway_base_supports_http_eip_and_rejects_stale_ip(self):
         server = {
             "gateway_public_base_url": "http://198.51.100.10",
@@ -723,8 +891,11 @@ class PipelineHelpersTests(unittest.TestCase):
 
     def test_gateway_config_is_scoped_to_contest(self):
         tid = "a" * 24
-        config = NGINX_CONF.format(tid=tid, port=80, locations="")
+        config = NGINX_CONF.format(
+            tid=tid, listen="192.0.2.2:80", locations=""
+        )
         self.assertTrue(config.startswith(f"# noi-contest: {tid}\n"))
+        self.assertIn("listen 192.0.2.2:80 default_server", config)
 
     def test_gateway_redirect_includes_seat_scoped_websocket_path(self):
         config = NGINX_LOCATION.format(
@@ -762,7 +933,7 @@ class PipelineHelpersTests(unittest.TestCase):
                 remote, {"tid": tid, "end_at_ms": end_at_ms}
             )
 
-            command = next(c for c in remote.commands if "enable --now" in c)
+            command = next(c for c in remote.commands if "systemctl restart" in c)
             self.assertIn(f"noi-contest-freeze-{tid}", command)
             payloads = "\n".join(content for content, _ in remote.contents)
             self.assertIn("AccuracySec=100ms", payloads)
@@ -782,6 +953,125 @@ class PipelineHelpersTests(unittest.TestCase):
             )
             self.assertIn("Restart=on-failure", payloads)
             self.assertIn("set -eu", payloads)
+
+    def test_schedule_extension_updates_watchdog_before_atomic_store_commit(self):
+        tid = "8" * 24
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(str(root / "state.db"))
+            try:
+                now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                begin_ms = now_ms + 1_800_000
+                end_ms = now_ms + 7_200_000
+                store.upsert_contest(
+                    tid,
+                    "schedule sync",
+                    ["apple"],
+                    {"apple": "P1"},
+                    begin_at_ms=begin_ms,
+                    end_at_ms=end_ms,
+                    hydro_rule="oi",
+                )
+                store.set_state(tid, "ready")
+                pool = SeatPoolState.create(
+                    tid,
+                    max_participants=1,
+                    spare_count=2,
+                    begin_at_ms=begin_ms,
+                )
+                store.put_seat_pool(tid, None, pool.to_dict())
+                cvm = DirectFakeCVM()
+                cvm.state = "RUNNING"
+                remote = FakeRemote()
+                pipe = Pipeline(
+                    pipeline_config(root), cvm, MagicMock(), store, MagicMock()
+                )
+                pipe._remote = MagicMock(return_value=remote)
+                events = []
+                pipe._install_freeze_watchdog = MagicMock(
+                    side_effect=lambda *_: events.append("watchdog")
+                )
+                original_commit = store.commit_schedule_sync
+
+                def commit_after_watchdog(*args, **kwargs):
+                    events.append("commit")
+                    return original_commit(*args, **kwargs)
+
+                store.commit_schedule_sync = MagicMock(
+                    side_effect=commit_after_watchdog
+                )
+
+                changed = pipe.sync_contest_schedule(
+                    tid,
+                    begin_at_ms=begin_ms + 600_000,
+                    end_at_ms=end_ms + 600_000,
+                    hydro_rule="oi",
+                    observed_at_ms=now_ms,
+                )
+
+                self.assertEqual(events, ["watchdog", "commit"])
+                self.assertFalse(changed["deadline_reached"])
+                self.assertEqual(
+                    store.get_contest(tid)["end_at_ms"], end_ms + 600_000
+                )
+                self.assertEqual(
+                    store.seat_pool(tid)["state"]["begin_at_ms"],
+                    begin_ms + 600_000,
+                )
+            finally:
+                store.close()
+
+    def test_schedule_extension_does_not_commit_when_watchdog_update_fails(self):
+        tid = "9" * 24
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(str(root / "state.db"))
+            try:
+                now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                begin_ms = now_ms + 1_800_000
+                end_ms = now_ms + 7_200_000
+                store.upsert_contest(
+                    tid,
+                    "schedule sync failure",
+                    ["apple"],
+                    {"apple": "P1"},
+                    begin_at_ms=begin_ms,
+                    end_at_ms=end_ms,
+                    hydro_rule="oi",
+                )
+                store.set_state(tid, "ready")
+                pool = SeatPoolState.create(
+                    tid,
+                    max_participants=1,
+                    spare_count=2,
+                    begin_at_ms=begin_ms,
+                )
+                store.put_seat_pool(tid, None, pool.to_dict())
+                cvm = DirectFakeCVM()
+                cvm.state = "RUNNING"
+                pipe = Pipeline(
+                    pipeline_config(root), cvm, MagicMock(), store, MagicMock()
+                )
+                pipe._remote = MagicMock(return_value=FakeRemote())
+                pipe._install_freeze_watchdog = MagicMock(
+                    side_effect=RuntimeError("timer install failed")
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "timer install failed"):
+                    pipe.sync_contest_schedule(
+                        tid,
+                        begin_at_ms=begin_ms + 600_000,
+                        end_at_ms=end_ms + 600_000,
+                        hydro_rule="oi",
+                        observed_at_ms=now_ms,
+                    )
+
+                self.assertEqual(store.get_contest(tid)["end_at_ms"], end_ms)
+                self.assertEqual(
+                    store.seat_pool(tid)["state"]["begin_at_ms"], begin_ms
+                )
+            finally:
+                store.close()
 
     def test_collect_freezes_before_removing_deadline_watchdog(self):
         events = []
@@ -852,10 +1142,10 @@ class PipelineHelpersTests(unittest.TestCase):
                 report = pipe.collect(tid)
 
                 self.assertEqual(report["alice"]["apple"]["status"], "ok")
-                self.assertEqual(store.get_contest(tid)["state"], "done")
+                self.assertEqual(store.get_contest(tid)["state"], "safe_wait")
                 self.assertEqual(cvm.start_count, 1)
-                self.assertEqual(cvm.stop_count, 1)
-                self.assertTrue(any("grep -Fqx" in command for command in remote.commands))
+                self.assertEqual(cvm.stop_count, 0)
+                self.assertTrue(any("docker pause" in command for command in remote.commands))
             finally:
                 store.close()
 
@@ -881,6 +1171,50 @@ class PipelineHelpersTests(unittest.TestCase):
                 self.assertEqual(cvm.start_count, 0)
                 self.assertEqual(cvm.stop_count, 0)
                 self.assertEqual(remote.commands, [])
+            finally:
+                store.close()
+
+    def test_prepare_blocks_missing_oj_material_receipt_before_cloud_mutation(self):
+        tid = "1" * 24
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(str(root / "state.db"))
+            try:
+                begin = datetime.now(timezone.utc) + timedelta(hours=1)
+                end = begin + timedelta(hours=5)
+                store.upsert_contest(
+                    tid,
+                    "receipt required",
+                    ["apple"],
+                    {"apple": "P1"},
+                    submission_mode="both",
+                    materials_mode="manual",
+                    begin_at_ms=int(begin.timestamp() * 1000),
+                    end_at_ms=int(end.timestamp() * 1000),
+                    hydro_rule="oi",
+                    practice_groups=2,
+                )
+                store.set_paper(tid, "paper.pdf", "3" * 64, 10)
+                store.set_testdata(tid, "data.tar.gz", "4" * 64, 20, 4, 60)
+                hydro = MagicMock()
+                hydro.roster.return_value = [{"uid": 7, "uname": "alice"}]
+                hydro.get_contest.return_value = {
+                    "beginAt": begin,
+                    "endAt": end,
+                    "rule": "oi",
+                }
+                cvm = DirectFakeCVM()
+                pipe = Pipeline(
+                    pipeline_config(root), cvm, hydro, store, MagicMock()
+                )
+                pipe.frontend = MagicMock()
+
+                with self.assertRaisesRegex(RuntimeError, "同字节发布"):
+                    pipe.prepare(tid)
+
+                self.assertEqual(cvm.start_count, 0)
+                self.assertEqual(cvm.direct_events, [])
+                pipe.frontend.disable.assert_not_called()
             finally:
                 store.close()
 
@@ -1022,7 +1356,7 @@ class PipelineHelpersTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_prepare_uploads_one_verified_read_only_paper_mount(self):
+    def test_prepare_uploads_verified_v1_material_bundle(self):
         tid = "f" * 24
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1033,6 +1367,9 @@ class PipelineHelpersTests(unittest.TestCase):
                 local_paper = root / "materials" / tid / "paper.pdf"
                 local_paper.parent.mkdir(parents=True)
                 local_paper.write_bytes(payload)
+                testdata = b"normalized-testdata-tarball"
+                testdata_digest = hashlib.sha256(testdata).hexdigest()
+                (local_paper.parent / "testdata.tar.gz").write_bytes(testdata)
                 begin = datetime.now(timezone.utc) + timedelta(hours=1)
                 end = begin + timedelta(hours=5)
                 store.upsert_contest(
@@ -1040,22 +1377,43 @@ class PipelineHelpersTests(unittest.TestCase):
                     "test",
                     ["apple"],
                     {"apple": "P1"},
+                    submission_mode="both",
                     begin_at_ms=int(begin.timestamp() * 1000),
                     end_at_ms=int(end.timestamp() * 1000),
+                    hydro_rule="oi",
                     max_participants=1,
                     spare_seats=0,
+                    practice_groups=2,
                 )
                 store.set_paper(tid, "题面.pdf", digest, len(payload))
+                store.set_testdata(
+                    tid,
+                    "data.zip",
+                    testdata_digest,
+                    len(testdata),
+                    4,
+                    20,
+                )
+                approve_v1_material_fixture(
+                    store,
+                    root,
+                    tid,
+                    payload,
+                    testdata,
+                    testdata_files=4,
+                    testdata_expanded_size=20,
+                )
                 hydro = MagicMock()
                 hydro.roster.return_value = [{"uid": 7, "uname": "alice"}]
                 hydro.get_contest.return_value = {
                     "beginAt": begin,
                     "endAt": end,
-                    "rule": "",
+                    "rule": "oi",
                 }
                 cvm = FakeCVM()
                 remote = FakeRemote()
                 remote.paper_digest = digest
+                remote.testdata_digest = testdata_digest
                 pipe = Pipeline(pipeline_config(root), cvm, hydro, store, MagicMock())
                 pipe._remote = lambda _: remote
 
@@ -1063,10 +1421,23 @@ class PipelineHelpersTests(unittest.TestCase):
 
                 self.assertEqual(ip, "198.51.100.10")
                 self.assertEqual(store.get_contest(tid)["state"], "ready")
-                self.assertEqual(len(remote.uploads), 1)
-                self.assertTrue(remote.uploads[0][1].endswith("/materials/paper.pdf"))
+                self.assertEqual(len(remote.uploads), 2)
+                self.assertRegex(
+                    remote.uploads[0][1],
+                    r"/materials/paper\.pdf\.upload-[a-f0-9]{24}$",
+                )
+                self.assertTrue(
+                    any(
+                        "mv -f --" in command
+                        and "/materials/paper.pdf" in command
+                        for command in remote.commands
+                    )
+                )
                 docker_run = next(c for c in remote.commands if c.startswith("docker run"))
                 self.assertIn("/materials:/home/student/试题:ro", docker_run)
+                self.assertIn("/testdata:/home/student/测试数据:ro", docker_run)
+                self.assertIn("SUBMISSION_MODE=both", docker_run)
+                self.assertIn("HAS_TEST_DATA=1", docker_run)
                 self.assertIn("RESOLUTION=1366x768", docker_run)
                 self.assertIn("FRAME_RATE=30", docker_run)
                 self.assertTrue(docker_run.endswith(remote.image_id))
@@ -1076,15 +1447,79 @@ class PipelineHelpersTests(unittest.TestCase):
                 )
                 self.assertIn("pgrep -x gnome-shell", desktop_check)
                 self.assertIn("/usr/libexec/gnome-session-binary", desktop_check)
-                self.assertIn("pgrep -f gnome-initial-setup", desktop_check)
+                self.assertIn("[g]nome-initial-setup", desktop_check)
+                self.assertNotIn(
+                    "pgrep -f gnome-initial-setup", desktop_check
+                )
                 self.assertIn(".contest-finalizer-status", desktop_check)
                 self.assertIn("比赛资料（从这里开始）", desktop_check)
                 self.assertIn("/run/contest-materials/.manifest", desktop_check)
+                self.assertIn("schema=3", desktop_check)
+                for entry in (
+                    "01_比赛题面.pdf",
+                    "02_辅助自测数据",
+                    "03_答案文件夹",
+                    "04_CSP程序回收系统.html",
+                    "05_使用说明.txt",
+                ):
+                    self.assertIn(entry, desktop_check)
                 self.assertIn("sha256sum /home/student/试题/paper.pdf", desktop_check)
                 self.assertIn("curl -fsS --max-time 3", desktop_check)
+                self.assertEqual(desktop_check.count("docker exec "), 2)
                 self.assertTrue(remote.contents)
+                port_gate = next(
+                    c for c in remote.commands
+                    if "网关端口 80 已被非 nginx 进程占用" in c
+                )
+                self.assertIn("ss -H -ltnp4 'sport = :80'", port_gate)
+                self.assertLess(
+                    remote.commands.index(port_gate),
+                    remote.commands.index(docker_run),
+                )
+                gateway_commit = next(
+                    c for c in remote.commands
+                    if "nginx 网关未在限定时间内监听" in c
+                )
+                self.assertIn("reload-or-restart nginx", gateway_commit)
+                self.assertIn("grep -F '\"nginx\"'", gateway_commit)
+                self.assertIn("curl -fsS --max-time 3", gateway_commit)
+                self.assertIn("/s/", gateway_commit)
             finally:
                 store.close()
+
+    def test_gateway_port_gate_rejects_invalid_port_before_remote_command(self):
+        remote = FakeRemote()
+        with self.assertRaisesRegex(ValueError, "网关监听端口无效"):
+            Pipeline._assert_gateway_port_available(remote, 0)
+        self.assertEqual(remote.commands, [])
+
+    def test_gateway_activation_rejects_unscoped_readiness_path(self):
+        remote = FakeRemote()
+        with self.assertRaisesRegex(ValueError, "网关验收路径无效"):
+            Pipeline._activate_pool_gateway(
+                remote, port=80, readiness_path="/not-a-seat"
+            )
+        self.assertEqual(remote.commands, [])
+
+    def test_gateway_listener_scope_allows_unrelated_interface_listener(self):
+        remote = FakeRemote()
+        Pipeline._assert_gateway_port_available(
+            remote, 80, bind_address="192.0.2.2"
+        )
+        command = remote.commands[-1]
+        self.assertIn('$4 == "192.0.2.2:80"', command)
+        self.assertIn('$4 == "0.0.0.0:80"', command)
+        self.assertNotIn('$4 == "10.0.2.15:80"', command)
+
+        Pipeline._activate_pool_gateway(
+            remote,
+            port=80,
+            bind_address="192.0.2.2",
+            readiness_path="/s/seat-token/vnc.html",
+        )
+        activation = remote.commands[-1]
+        self.assertIn("http://192.0.2.2:80/s/seat-token/vnc.html", activation)
+        self.assertIn('$4 == "192.0.2.2:80"', activation)
 
     def test_direct_prepare_reaches_ready_with_https_fallback_enabled(self):
         tid = "8" * 24
@@ -1097,6 +1532,9 @@ class PipelineHelpersTests(unittest.TestCase):
                 local_paper = root / "materials" / tid / "paper.pdf"
                 local_paper.parent.mkdir(parents=True)
                 local_paper.write_bytes(payload)
+                testdata = b"direct-testdata-tarball"
+                testdata_digest = hashlib.sha256(testdata).hexdigest()
+                (local_paper.parent / "testdata.tar.gz").write_bytes(testdata)
                 begin = datetime.now(timezone.utc) + timedelta(hours=1)
                 end = begin + timedelta(hours=5)
                 store.upsert_contest(
@@ -1104,22 +1542,43 @@ class PipelineHelpersTests(unittest.TestCase):
                     "direct prepare",
                     ["apple"],
                     {"apple": "P1"},
+                    submission_mode="both",
                     begin_at_ms=int(begin.timestamp() * 1000),
                     end_at_ms=int(end.timestamp() * 1000),
+                    hydro_rule="oi",
                     max_participants=1,
                     spare_seats=0,
+                    practice_groups=2,
                 )
                 store.set_paper(tid, "题面.pdf", digest, len(payload))
+                store.set_testdata(
+                    tid,
+                    "data.zip",
+                    testdata_digest,
+                    len(testdata),
+                    4,
+                    20,
+                )
+                approve_v1_material_fixture(
+                    store,
+                    root,
+                    tid,
+                    payload,
+                    testdata,
+                    testdata_files=4,
+                    testdata_expanded_size=20,
+                )
                 hydro = MagicMock()
                 hydro.roster.return_value = [{"uid": 7, "uname": "alice"}]
                 hydro.get_contest.return_value = {
                     "beginAt": begin,
                     "endAt": end,
-                    "rule": "",
+                    "rule": "oi",
                 }
                 cvm = DirectFakeCVM()
                 remote = FakeRemote()
                 remote.paper_digest = digest
+                remote.testdata_digest = testdata_digest
                 pipe = Pipeline(
                     pipeline_config(root), cvm, hydro, store, MagicMock()
                 )
@@ -1151,6 +1610,9 @@ class PipelineHelpersTests(unittest.TestCase):
                 local_paper = root / "materials" / tid / "paper.pdf"
                 local_paper.parent.mkdir(parents=True)
                 local_paper.write_bytes(payload)
+                testdata = b"direct-failure-testdata"
+                testdata_digest = hashlib.sha256(testdata).hexdigest()
+                (local_paper.parent / "testdata.tar.gz").write_bytes(testdata)
                 begin = datetime.now(timezone.utc) + timedelta(hours=1)
                 end = begin + timedelta(hours=5)
                 store.upsert_contest(
@@ -1158,23 +1620,44 @@ class PipelineHelpersTests(unittest.TestCase):
                     "direct close failure",
                     ["apple"],
                     {"apple": "P1"},
+                    submission_mode="both",
                     begin_at_ms=int(begin.timestamp() * 1000),
                     end_at_ms=int(end.timestamp() * 1000),
+                    hydro_rule="oi",
                     max_participants=1,
                     spare_seats=0,
+                    practice_groups=2,
                 )
                 store.set_paper(tid, "题面.pdf", digest, len(payload))
+                store.set_testdata(
+                    tid,
+                    "data.zip",
+                    testdata_digest,
+                    len(testdata),
+                    4,
+                    20,
+                )
+                approve_v1_material_fixture(
+                    store,
+                    root,
+                    tid,
+                    payload,
+                    testdata,
+                    testdata_files=4,
+                    testdata_expanded_size=20,
+                )
                 hydro = MagicMock()
                 hydro.roster.return_value = [{"uid": 7, "uname": "alice"}]
                 hydro.get_contest.return_value = {
                     "beginAt": begin,
                     "endAt": end,
-                    "rule": "",
+                    "rule": "oi",
                 }
                 cvm = DirectFakeCVM()
                 cvm.state = "RUNNING"
                 remote = FakeRemote()
                 remote.paper_digest = digest
+                remote.testdata_digest = testdata_digest
                 config = pipeline_config(root)
                 # The HTTPS compatibility route is part of readiness. Failure
                 # must prevent the direct SG publication even if the VM was
@@ -1198,7 +1681,7 @@ class PipelineHelpersTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_prepare_uploads_and_mounts_optional_testdata_read_only(self):
+    def test_prepare_uploads_and_mounts_required_testdata_read_only(self):
         tid = "e" * 24
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1220,21 +1703,33 @@ class PipelineHelpersTests(unittest.TestCase):
                     "test",
                     ["apple"],
                     {"apple": "P1"},
+                    submission_mode="both",
                     begin_at_ms=int(begin.timestamp() * 1000),
                     end_at_ms=int(end.timestamp() * 1000),
+                    hydro_rule="oi",
                     max_participants=1,
                     spare_seats=0,
+                    practice_groups=2,
                 )
                 store.set_paper(tid, "题面.pdf", paper_digest, len(paper))
                 store.set_testdata(
-                    tid, "data.zip", testdata_digest, len(testdata), 2, 20
+                    tid, "data.zip", testdata_digest, len(testdata), 4, 20
+                )
+                approve_v1_material_fixture(
+                    store,
+                    root,
+                    tid,
+                    paper,
+                    testdata,
+                    testdata_files=4,
+                    testdata_expanded_size=20,
                 )
                 hydro = MagicMock()
                 hydro.roster.return_value = [{"uid": 7, "uname": "alice"}]
                 hydro.get_contest.return_value = {
                     "beginAt": begin,
                     "endAt": end,
-                    "rule": "",
+                    "rule": "oi",
                 }
                 cvm = FakeCVM()
                 remote = FakeRemote()
@@ -1248,21 +1743,48 @@ class PipelineHelpersTests(unittest.TestCase):
                 pipe.prepare(tid)
 
                 self.assertEqual(len(remote.uploads), 2)
-                self.assertTrue(remote.uploads[1][1].endswith("/materials/testdata.tar.gz"))
+                self.assertRegex(
+                    remote.uploads[1][1],
+                    r"/materials/testdata\.tar\.gz\.upload-[a-f0-9]{24}$",
+                )
+                self.assertTrue(
+                    any(
+                        "mv -f --" in command
+                        and "/materials/testdata.tar.gz" in command
+                        for command in remote.commands
+                    )
+                )
                 docker_run = next(c for c in remote.commands if c.startswith("docker run"))
                 self.assertIn("/testdata:/home/student/测试数据:ro", docker_run)
                 self.assertIn("HAS_TEST_DATA=1", docker_run)
                 self.assertIn("--memory-swap 1536m", docker_run)
-                self.assertTrue(any("tar -xzf" in c for c in remote.commands))
+                self.assertTrue(
+                    any(
+                        "tar --delay-directory-restore -xzf" in c
+                        for c in remote.commands
+                    )
+                )
+                rebuild_testdata = next(
+                    c
+                    for c in remote.commands
+                    if "tar --delay-directory-restore -xzf" in c
+                )
+                self.assertIn("--delay-directory-restore", rebuild_testdata)
+                self.assertIn("chmod -R u+w --", rebuild_testdata)
+                self.assertIn("rm -rf --", rebuild_testdata)
                 desktop_check = next(
                     c for c in remote.commands if ".contest-finalizer-status" in c
                 )
+                self.assertEqual(
+                    remote.timeouts[remote.commands.index(desktop_check)], 300
+                )
                 self.assertIn("find /home/student/测试数据 -type f", desktop_check)
                 self.assertIn("test ! -w", desktop_check)
+                self.assertEqual(desktop_check.count("docker exec "), 2)
             finally:
                 store.close()
 
-    def test_collect_both_prefers_web_per_problem_and_falls_back_to_folder(self):
+    def test_collect_always_uses_frozen_formal_answer_directory(self):
         tid = "d" * 24
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1302,8 +1824,14 @@ class PipelineHelpersTests(unittest.TestCase):
 
                 report = pipe.collect(tid)
 
-                self.assertEqual(report["alice"]["apple"]["submission_source"], "web")
-                self.assertEqual(report["alice"]["banana"]["submission_source"], "folder")
+                self.assertEqual(
+                    report["alice"]["apple"]["submission_source"],
+                    "deadline_snapshot",
+                )
+                self.assertEqual(
+                    report["alice"]["banana"]["submission_source"],
+                    "deadline_snapshot",
+                )
                 self.assertEqual(report["alice"]["apple"]["status"], "ok")
                 self.assertEqual(report["alice"]["banana"]["status"], "ok")
             finally:
@@ -1370,14 +1898,15 @@ class PipelineHelpersTests(unittest.TestCase):
                         [call.args[-1] for call in submitter.submit_one.call_args_list],
                         ["a" * 64, "a" * 64],
                     )
-                    self.assertTrue(
+                    self.assertFalse(
                         any(
                             "docker rm -f seat-e-7" in command
                             for command in remote.commands
-                        )
+                        ),
+                        "回传成功后仍须保留冻结容器直到安全等待结束",
                     )
 
-                self.assertEqual(store.get_contest(tid)["state"], "done")
+                self.assertEqual(store.get_contest(tid)["state"], "safe_wait")
             finally:
                 store.close()
 
@@ -1408,7 +1937,7 @@ class PipelineHelpersTests(unittest.TestCase):
                 )
                 source = (
                     '#include <cstdio>\nint main(){freopen("apple.in","r",stdin);'
-                    'freopen("apple.out","w",stdout);return 0;}\n'
+                    'freopen("apple.out","w",stdout);}\n'
                 )
                 store.set_state(tid, "ready")
                 web_row = store.enqueue_web_submission(
@@ -1477,7 +2006,7 @@ class PipelineHelpersTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_collect_web_missing_does_not_create_zero_score_record(self):
+    def test_collect_missing_formal_file_creates_auditable_zero_final_record(self):
         tid = "2" * 24
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1509,22 +2038,137 @@ class PipelineHelpersTests(unittest.TestCase):
                     "orchestrator_token": "secret",
                     "submit_lang": "cc",
                 }
-                remote = FakeRemote(("apple",))
+                remote = FakeRemote(())
                 pipe = Pipeline(
                     config, FakeCVM(), MagicMock(), store, MagicMock()
                 )
                 pipe._remote = lambda _: remote
 
                 with patch("services.pipeline.HydroSubmitter") as factory:
+                    factory.return_value.submission_id.return_value = "c" * 64
+                    factory.return_value.submit_one.return_value = {
+                        "ok": True,
+                        "rid": "d" * 24,
+                    }
                     report = pipe.collect(tid)
 
                 self.assertEqual(report["alice"]["apple"]["status"], "missing")
-                factory.return_value.submit_one.assert_not_called()
+                factory.return_value.submit_one.assert_called_once()
                 run_dir = next((root / "collected" / tid).iterdir())
                 submit_log = json.loads(
                     (run_dir / "submit_log.json").read_text(encoding="utf-8")
                 )
-                self.assertTrue(submit_log["alice"]["apple"]["skipped"])
+                logged = submit_log["alice"]["apple"]
+                self.assertTrue(logged["ok"])
+                self.assertTrue(logged["enforced_zero"])
+                self.assertEqual(logged["rid"], "d" * 24)
+            finally:
+                store.close()
+
+    def test_safe_wait_preserves_frozen_seat_until_grace_then_stops_vm(self):
+        tid = "3" * 24
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(str(root / "state.db"))
+            try:
+                store.upsert_contest(
+                    tid,
+                    "delayed shutdown",
+                    ["apple"],
+                    {"apple": "P1"},
+                    begin_at_ms=500_000,
+                    end_at_ms=1_000_000,
+                    hydro_rule="oi",
+                )
+                store.add_seat(
+                    tid,
+                    7,
+                    "alice",
+                    "token",
+                    "pass1234",
+                    "submit-token",
+                    "alice",
+                    "seat-3-7",
+                    "172.18.0.2",
+                )
+                store.set_state(tid, "ready")
+                config = pipeline_config(root)
+                config["orchestrator"]["shutdown_grace_minutes"] = 1
+                cvm = FakeCVM()
+                remote = FakeRemote(("apple",))
+                pipe = Pipeline(config, cvm, MagicMock(), store, MagicMock())
+                pipe._remote = lambda _: remote
+
+                with patch("services.pipeline.time.time", return_value=1000):
+                    pipe.collect(tid)
+
+                waiting = store.get_contest(tid)
+                self.assertEqual(waiting["state"], "safe_wait")
+                self.assertEqual(waiting["shutdown_after_ms"], 1_060_000)
+                self.assertFalse(
+                    any("docker rm -f seat-3-7" in c for c in remote.commands)
+                )
+                with patch("services.pipeline.time.time", return_value=1059):
+                    result = pipe.finish_safe_wait(tid)
+                self.assertFalse(result["ended"])
+                self.assertEqual(cvm.state, "RUNNING")
+
+                with patch("services.pipeline.time.time", return_value=1061):
+                    result = pipe.finish_safe_wait(tid)
+
+                self.assertTrue(result["ended"])
+                self.assertEqual(store.get_contest(tid)["state"], "safe_ended")
+                self.assertEqual(cvm.state, "STOPPED")
+                self.assertTrue(
+                    any("docker rm -f seat-3-7" in c for c in remote.commands)
+                )
+            finally:
+                store.close()
+
+    def test_safe_wait_refuses_shutdown_when_collection_evidence_is_tampered(self):
+        tid = "4" * 24
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(str(root / "state.db"))
+            try:
+                store.upsert_contest(
+                    tid,
+                    "tamper evidence",
+                    ["apple"],
+                    {"apple": "P1"},
+                    begin_at_ms=500_000,
+                    end_at_ms=1_000_000,
+                    hydro_rule="oi",
+                )
+                store.add_seat(
+                    tid,
+                    7,
+                    "alice",
+                    "token",
+                    "pass1234",
+                    "submit-token",
+                    "alice",
+                    "seat-4-7",
+                    "172.18.0.2",
+                )
+                store.set_state(tid, "ready")
+                config = pipeline_config(root)
+                config["orchestrator"]["shutdown_grace_minutes"] = 1
+                cvm = FakeCVM()
+                pipe = Pipeline(config, cvm, MagicMock(), store, MagicMock())
+                pipe._remote = lambda _: FakeRemote(("apple",))
+                with patch("services.pipeline.time.time", return_value=1000):
+                    pipe.collect(tid)
+                contest = store.get_contest(tid)
+                report_path = Path(contest["collection_dir"]) / "report.json"
+                report_path.write_text("{}", encoding="utf-8")
+
+                with patch("services.pipeline.time.time", return_value=1061):
+                    with self.assertRaisesRegex(RuntimeError, "回收证据文件校验失败"):
+                        pipe.finish_safe_wait(tid)
+
+                self.assertEqual(store.get_contest(tid)["state"], "safe_wait")
+                self.assertEqual(cvm.state, "RUNNING")
             finally:
                 store.close()
 

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 cross-machine image evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "status", "session_id", "source", "bundle", "hosts", "transitions"],
+  "properties": {
+    "$schema": {"const": "v1-cross-machine-image-evidence.schema.json"},
+    "schema_version": {"const": 1},
+    "status": {"const": "passed"},
+    "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "tree"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+      }
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["archive_sha256", "bundle_checksums_sha256", "bundle_manifest_sha256", "contract", "image_id", "image_tag", "iso_sha256", "release_manifest_sha256", "source_revision"],
+      "properties": {
+        "archive_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "bundle_checksums_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "bundle_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "contract": {"const": "finalizer-status-v1"},
+        "image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "image_tag": {"type": "string", "minLength": 1},
+        "iso_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "release_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+      }
+    },
+    "hosts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["export", "import"],
+      "properties": {
+        "export": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "import": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "transitions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline_image_id", "baseline_source_target", "candidate_image_id", "facts"],
+      "properties": {
+        "baseline_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "baseline_source_target": {"type": "string", "pattern": "^image-releases/[A-Za-z0-9TZ-]+$"},
+        "candidate_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "facts": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "prefixItems": [
+            {"$ref": "#/$defs/exportFact"},
+            {"$ref": "#/$defs/importedFact"},
+            {"$ref": "#/$defs/promotedFact"},
+            {"$ref": "#/$defs/rolledBackFact"},
+            {"$ref": "#/$defs/repromotedFact"},
+            {"$ref": "#/$defs/restoredFact"}
+          ],
+          "items": false
+        }
+      }
+    }
+  },
+  "$defs": {
+    "factBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "sha256"],
+      "properties": {
+        "phase": {"enum": ["export", "imported", "promoted", "rolled_back", "repromoted", "restored"]},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "exportFact": {"allOf": [{"$ref": "#/$defs/factBase"}, {"properties": {"phase": {"const": "export"}}}]},
+    "importedFact": {"allOf": [{"$ref": "#/$defs/factBase"}, {"properties": {"phase": {"const": "imported"}}}]},
+    "promotedFact": {"allOf": [{"$ref": "#/$defs/factBase"}, {"properties": {"phase": {"const": "promoted"}}}]},
+    "rolledBackFact": {"allOf": [{"$ref": "#/$defs/factBase"}, {"properties": {"phase": {"const": "rolled_back"}}}]},
+    "repromotedFact": {"allOf": [{"$ref": "#/$defs/factBase"}, {"properties": {"phase": {"const": "repromoted"}}}]},
+    "restoredFact": {"allOf": [{"$ref": "#/$defs/factBase"}, {"properties": {"phase": {"const": "restored"}}}]}
+  }
+}

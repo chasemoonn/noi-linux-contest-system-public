@@ -167,6 +167,9 @@ class PublicReleaseHygieneTests(unittest.TestCase):
         import_script = (ROOT / "scripts" / "import-local-image-bundle.sh").read_text(
             encoding="utf-8"
         )
+        identity_verifier = (
+            ROOT / "scripts" / "verify_docker_archive_identity.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("--source-revision", export_script)
         self.assertIn("source_revision", export_script)
         self.assertIn("org.opencontainers.image.revision", export_script)
@@ -191,6 +194,10 @@ class PublicReleaseHygieneTests(unittest.TestCase):
         )
         self.assertIn("source_revision", import_script)
         self.assertIn("org.opencontainers.image.revision", import_script)
+        self.assertIn("verify_docker_archive_identity.py", export_script)
+        self.assertIn("verify_docker_archive_identity.py", import_script)
+        self.assertIn("OCI identity graph", identity_verifier)
+        self.assertIn("expected image identity", identity_verifier)
         self.assertLess(
             import_script.index("comparisons = {"),
             import_script.index("tag_inspect_status=0"),

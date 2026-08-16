@@ -65,6 +65,51 @@ class RemoteHostKeyTests(unittest.TestCase):
         sftp.close.assert_called_once()
         client.close.assert_called_once()
 
+    @patch("services.remote.paramiko.SSHClient")
+    def test_run_drains_stderr_while_waiting_for_stdout(self, ssh_client):
+        class Channel:
+            def __init__(self):
+                self.stdout = [b"ready\n"]
+                self.stderr = [b"x" * 65536, b"diagnostic\n"]
+
+            def recv_ready(self):
+                return bool(self.stdout)
+
+            def recv_stderr_ready(self):
+                return bool(self.stderr)
+
+            def recv(self, _size):
+                return self.stdout.pop(0)
+
+            def recv_stderr(self, _size):
+                return self.stderr.pop(0)
+
+            def exit_status_ready(self):
+                return not self.stdout and not self.stderr
+
+            def recv_exit_status(self):
+                return 1
+
+        channel = Channel()
+        stdout = MagicMock(channel=channel)
+        stderr = MagicMock(channel=channel)
+        client = MagicMock()
+        client.exec_command.return_value = (MagicMock(), stdout, stderr)
+        ssh_client.return_value = client
+        remote = Remote(
+            "203.0.113.10",
+            "root",
+            "/keys/contest",
+            host_key_sha256=host_key_sha256(self.key),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "diagnostic"):
+            remote.run("false", timeout=1)
+
+        stdout.read.assert_not_called()
+        stderr.read.assert_not_called()
+        client.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

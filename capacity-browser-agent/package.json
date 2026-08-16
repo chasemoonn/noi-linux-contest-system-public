@@ -1,0 +1,15 @@
+{
+  "name": "noi-v1-capacity-browser-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22 <25"},
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "start": "node agent.mjs --loop",
+    "publish": "node publish.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.62.0"
+  }
+}

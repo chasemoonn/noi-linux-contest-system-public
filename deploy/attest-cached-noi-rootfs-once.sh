@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # Explicit one-time recovery command; intentionally not part of normal builds.
 readonly EXPECTED_SOURCE_ID="sha256:fed2063bb95263b9241368420215a4acc538e0f0253b3f4b51bdc4e1769c7631"
-readonly EXPECTED_ISO_SHA256="C8824240736352E5E4AAF3F6532B40961F75FA9F23D670BB78881355A49D5878"
+readonly EXPECTED_ISO_SHA256="c8824240736352e5e4aaf3f6532b40961f75fa9f23d670bb78881355a49d5878"
 readonly ISO_LABEL="org.noi.iso.sha256"
 
 TARGET_TAG="${1:-noi-linux-official-rootfs:2.0}"

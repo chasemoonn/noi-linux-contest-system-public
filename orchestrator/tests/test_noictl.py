@@ -9,6 +9,7 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -113,6 +114,43 @@ class NoictlTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, combined)
 
+    def make_candidate(self):
+        candidate = self.directory / "candidate"
+        candidate.mkdir()
+        content = b"qualification laboratory\n"
+        archive = candidate / "noi-linux-contest-system-v1-0.2.0.tar"
+        with tarfile.open(archive, "w") as bundle:
+            root = tarfile.TarInfo("noi-linux-contest-system-v1/")
+            root.type = tarfile.DIRTYPE; root.mode = 0o755
+            bundle.addfile(root)
+            item = tarfile.TarInfo("noi-linux-contest-system-v1/README.md")
+            item.mode = 0o644; item.size = len(content)
+            bundle.addfile(item, io.BytesIO(content))
+        row = {
+            "path": "README.md", "mode": "100644", "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+        manifest = {
+            "$schema": "v1-source-candidate.schema.json", "schema_version": 1,
+            "candidate": {"version": "0.2.0", "profile": "aliyun-hydro5-pm2-direct-v1",
+                          "product_contract": "NOI Linux V1"},
+            "source": {"revision": "a" * 40, "tree": "b" * 40,
+                       "archive": {"name": archive.name,
+                                   "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                                   "bytes": archive.stat().st_size,
+                                   "root": "noi-linux-contest-system-v1/"},
+                       "tracked_file_count": 1, "files": [row]},
+            "static_gates": {"submission_fault_injection": "passed",
+                             "v1_product_contract": "passed",
+                             "public_release_boundary": "passed"},
+            "qualification": {"production_qualified": False,
+                              "report": None, "report_sha256": None},
+        }
+        (candidate / "candidate-manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        return candidate
+
     def test_doctor_json_is_static_read_only(self):
         before = sorted(path.name for path in self.directory.iterdir())
         completed = self.run_noictl(
@@ -132,6 +170,124 @@ class NoictlTests(unittest.TestCase):
         )
         self.assertEqual(before, sorted(path.name for path in self.directory.iterdir()))
         self.assert_no_sensitive_output(completed.stdout, completed.stderr)
+
+    def test_install_plan_refuses_non_linux_before_candidate_access(self):
+        candidate = self.make_candidate()
+        expected_manifest = (
+            hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()
+            if sys.platform.startswith("linux") else "0" * 64
+        )
+        completed = self.run_noictl(
+            "install", "--plan", "--qualification-lab", "--candidate", candidate,
+            "--expected-manifest-sha256", expected_manifest,
+            "--json", "--config", self.config_path,
+        )
+        if sys.platform.startswith("linux"):
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+        else:
+            self.assertEqual(completed.returncode, 3, completed.stderr)
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["checks"][0]["code"], "INSTALL_TARGET_LINUX")
+        self.assert_no_sensitive_output(completed.stdout, completed.stderr)
+
+    def test_install_plan_verifies_candidate_and_is_read_only(self):
+        module_spec = importlib.util.spec_from_file_location("noictl_install_plan", NOICTL)
+        module = importlib.util.module_from_spec(module_spec)
+        sys.modules[module_spec.name] = module
+        try:
+            module_spec.loader.exec_module(module)
+            candidate = self.make_candidate()
+            manifest_sha = hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()
+            with mock.patch.dict(os.environ, self.environment, clear=True), \
+                    mock.patch.object(module, "_runtime_system", return_value="Linux"):
+                result, exit_code = module._install_plan(
+                    self.config_path, str(candidate), True, manifest_sha
+                )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(result["status"], "planned")
+            self.assertFalse(result["changed"])
+            self.assertRegex(result["plan_id"], r"^[0-9a-f]{64}$")
+            self.assertEqual([row["sequence"] for row in result["actions"]], list(range(1, 8)))
+            self.assertEqual(result["checks"][-1]["evidence"]["service_commands"], 0)
+            serialized = json.dumps(result)
+            self.assert_no_sensitive_output(serialized)
+
+            archive = next(candidate.glob("*.tar"))
+            changed = bytearray(archive.read_bytes()); changed[-1] ^= 1; archive.write_bytes(changed)
+            with mock.patch.dict(os.environ, self.environment, clear=True), \
+                    mock.patch.object(module, "_runtime_system", return_value="Linux"):
+                refused, refused_code = module._install_plan(
+                    self.config_path, str(candidate), True, manifest_sha
+                )
+            self.assertEqual(refused_code, 2)
+            self.assertEqual(refused["checks"][0]["code"], "INSTALL_CANDIDATE_VERIFIED")
+        finally:
+            sys.modules.pop(module_spec.name, None)
+
+    def test_install_plan_refuses_unqualified_production_candidate(self):
+        module_spec = importlib.util.spec_from_file_location("noictl_install_production", NOICTL)
+        module = importlib.util.module_from_spec(module_spec)
+        sys.modules[module_spec.name] = module
+        try:
+            module_spec.loader.exec_module(module)
+            with mock.patch.dict(os.environ, self.environment, clear=True), \
+                    mock.patch.object(module, "_runtime_system", return_value="Linux"):
+                result, exit_code = module._install_plan(
+                    self.config_path, str(self.make_candidate()), False, "0" * 64
+                )
+            self.assertEqual(exit_code, 3)
+            self.assertEqual(result["status"], "refused")
+            self.assertEqual(result["checks"][0]["code"], "INSTALL_PRODUCTION_QUALIFIED")
+        finally:
+            sys.modules.pop(module_spec.name, None)
+
+    def test_install_plan_accepts_only_exact_qualified_reverification(self):
+        module_spec = importlib.util.spec_from_file_location("noictl_install_qualified", NOICTL)
+        module = importlib.util.module_from_spec(module_spec)
+        sys.modules[module_spec.name] = module
+        try:
+            module_spec.loader.exec_module(module)
+            candidate = self.make_candidate()
+            manifest_path = candidate / "candidate-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["qualification"]["production_qualified"] = True
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            archive_sha = manifest["source"]["archive"]["sha256"]
+            verifier_result = {
+                "status": "qualified", "revision": "a" * 40,
+                "archive_sha256": archive_sha, "manifest_sha256": manifest_sha,
+            }
+            completed = mock.Mock(returncode=0, stdout=json.dumps(verifier_result), stderr="")
+            with mock.patch.dict(os.environ, self.environment, clear=True), \
+                    mock.patch.object(module, "_runtime_system", return_value="Linux"), \
+                    mock.patch.object(module, "_run_trusted_candidate_verifier", return_value=completed) as run:
+                result, exit_code = module._install_plan(
+                    self.config_path, str(candidate), False, manifest_sha
+                )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(result["status"], "planned")
+            self.assertEqual(result["scope"], "production")
+            self.assertTrue(result["checks"][3]["evidence"]["qualification_reverified"])
+            self.assertEqual(run.call_args.args[0], candidate)
+            self.assertTrue(run.call_args.args[1])
+        finally:
+            sys.modules.pop(module_spec.name, None)
+
+    def test_install_plan_rejects_wrong_external_manifest_pin(self):
+        module_spec = importlib.util.spec_from_file_location("noictl_install_pin", NOICTL)
+        module = importlib.util.module_from_spec(module_spec); sys.modules[module_spec.name] = module
+        try:
+            module_spec.loader.exec_module(module); candidate = self.make_candidate()
+            with mock.patch.dict(os.environ, self.environment, clear=True), \
+                    mock.patch.object(module, "_runtime_system", return_value="Linux"):
+                result, exit_code = module._install_plan(
+                    self.config_path, str(candidate), True, "9" * 64
+                )
+            self.assertEqual(exit_code, 3)
+            self.assertEqual(result["checks"][0]["code"], "INSTALL_EXTERNAL_MANIFEST_PIN")
+        finally:
+            sys.modules.pop(module_spec.name, None)
 
     def test_config_validate_supports_global_json_option(self):
         completed = self.run_noictl(
@@ -610,7 +766,7 @@ class NoictlTests(unittest.TestCase):
             bundles[0].read_text(encoding="utf-8"),
         )
 
-    def test_cli_imports_no_network_service_or_process_clients(self):
+    def test_cli_imports_no_network_or_service_clients(self):
         tree = ast.parse(NOICTL.read_text(encoding="utf-8"))
         imports = set()
         for node in ast.walk(tree):
@@ -625,7 +781,6 @@ class NoictlTests(unittest.TestCase):
                     "pymongo",
                     "requests",
                     "socket",
-                    "subprocess",
                     "urllib",
                 }
             ),

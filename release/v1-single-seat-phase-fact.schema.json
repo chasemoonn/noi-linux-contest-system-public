@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 single-seat phase fact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "phase", "session_id", "observed_at", "collector", "source", "components", "context", "ordinary_oj", "observations", "artifacts"],
+  "properties": {
+    "$schema": {"const": "v1-single-seat-phase-fact.schema.json"},
+    "schema_version": {"const": 1},
+    "phase": {"enum": ["materials", "desktop", "compile", "manual_submit", "cutoff_submit", "oj_record", "collection", "shutdown", "test_cleanup"]},
+    "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "collector": {
+      "type": "object", "additionalProperties": false,
+      "required": ["anonymous_host_id", "role"],
+      "properties": {
+        "anonymous_host_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "role": {"enum": ["control", "desktop", "oj"]}
+      }
+    },
+    "source": {"$ref": "#/$defs/source"},
+    "components": {"$ref": "#/$defs/components"},
+    "context": {"$ref": "#/$defs/context"},
+    "ordinary_oj": {"$ref": "#/$defs/ordinaryOj"},
+    "observations": {"type": "object"},
+    "artifacts": {
+      "type": "array", "minItems": 1, "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["reference", "sha256"],
+        "properties": {
+          "reference": {"type": "string", "pattern": "^[a-z_]+/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["revision", "tree"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+      }
+    },
+    "components": {
+      "type": "object", "additionalProperties": false,
+      "required": ["orchestrator_image_digest", "desktop_image_id", "desktop_source_revision", "hydro_plugin_sha256"],
+      "properties": {
+        "orchestrator_image_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "desktop_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "desktop_source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "hydro_plugin_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "context": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contest_id_sha256", "seat_id_sha256", "candidate_id", "seat_candidate", "problem_slug", "cutoff_at_ms"],
+      "properties": {
+        "contest_id_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "seat_id_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "candidate_id": {"type": "string", "pattern": "^9999[0-9]{8}$"},
+        "seat_candidate": {"type": "string", "pattern": "^CSP[0-9]{3}$"},
+        "problem_slug": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
+        "cutoff_at_ms": {"type": "integer", "minimum": 1}
+      }
+    },
+    "ordinaryOj": {
+      "type": "object", "additionalProperties": false,
+      "required": ["homepage_status", "login_status", "prep_health_ok", "prep_database_ok", "errors", "restarts", "pm2_fingerprint_sha256", "observed_at"],
+      "properties": {
+        "homepage_status": {"const": 200},
+        "login_status": {"const": 200},
+        "prep_health_ok": {"const": true},
+        "prep_database_ok": {"const": true},
+        "errors": {"const": 0},
+        "restarts": {"const": 0},
+        "pm2_fingerprint_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "observed_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

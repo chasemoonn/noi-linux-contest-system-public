@@ -1,6 +1,7 @@
 # `noictl` 命令契约
 
-`noictl` 是统一安装、诊断、升级和支持入口。第一批只读命令已由 `scripts/noictl.py` 实现；本页中明确列入“第一批可执行面”的命令可以运行，其余命令仍只是冻结的后续契约，不能当作已经交付。
+`noictl` 是统一安装、诊断、升级和支持入口。只读命令、已有站点的 V1 组合升级事务与首次
+干净安装事务已经实现；比赛事务和卸载仍按本页状态区分，不能把尚未交付的命令当成可用功能。
 
 ## 核心原则
 
@@ -20,8 +21,8 @@
 | `noictl init` | 后续契约 | 否 | 交互生成版本化站点配置和秘密引用，不安装服务 |
 | `noictl config validate` | 已实现 | 是 | 校验环境引用和现有 orchestrator 配置不变量；不连接外部系统 |
 | `noictl config show --effective --redact` | 已实现 | 是 | 显示环境引用展开后的脱敏配置及每个已显示值的来源 |
-| `noictl install --plan` | 后续契约 | 是 | 输出要写入的文件、服务、端口、备份和预计中断 |
-| `noictl install --apply --plan-id ID` | 后续契约 | 否 | 在重新验证计划后执行事务化安装 |
+| `noictl install --plan` | 已实现 | 是 | 要求候选目录外的可信 manifest SHA；再用候选归档内验证器重验全部签名资格证据，输出目标、备份、验证及回滚计划 |
+| `noictl install --apply --private-plan PATH --expected-plan-sha256 HEX64` | 已实现（升级与首次干净安装） | 否 | 按私有计划的精确 `operation` 分派六阶段组合事务；任一失败自动完整回滚，禁止手工切换执行器 |
 | `noictl verify` | 后续契约 | 是 | 运行安装后静态检查，不创建真实座位 |
 | `noictl canary --plan` | 后续契约 | 是 | 展示单座 canary 将创建的资源、费用和持续时间 |
 | `noictl canary --apply --plan-id ID` | 后续契约 | 否 | 创建一座受控真人 canary，并在结束后收卷和关闭 |
@@ -33,7 +34,7 @@
 | `noictl support-bundle` | 已实现 | 是 | 生成一个脱敏、带哈希且不覆盖现有文件的本地 JSON 诊断包 |
 | `noictl uninstall --keep-data --plan` | 后续契约 | 是 | 显示卸载服务但保留数据的动作 |
 
-## 第一批可执行面
+## 可执行面
 
 从仓库根目录使用 Python 3 运行；Linux 与 Windows 均可执行：
 
@@ -55,6 +56,16 @@ python scripts/noictl.py --config orchestrator/config.yaml \
 2. `ORCHESTRATOR_CONFIG` 环境变量；
 3. 当前目录的 `config.yaml`；
 4. 仓库中的 `orchestrator/config.yaml`。
+
+`install --apply` 不读取 `--config`，也不接受候选目录或资格实验室开关。它只接受
+`build_v1_private_upgrade_plan.py` 或 `build_v1_private_clean_install_plan.py` 原子发布的 root-only
+私有计划，以及从计划生成器标准输出中独立复制的 SHA256。私有计划必须先绑定公开计划 ID、封存备份、资格报告中的控制器
+镜像、当前运行容器、配置有效值、Caddy/Hydro/云关闭态和完整回滚组合。执行被中断时，必须
+用完全相同的计划与 SHA256 原样重跑，使持久事务进入 `rollback_verified`；禁止改用旧部署脚本。
+完整命令顺序见 [V1 已有站点组合升级事务](V1_UPGRADE_TRANSACTION.md)。首次安装的独立基线、
+私有计划与回滚语义见 [V1 干净目标首次安装事务](V1_CLEAN_INSTALL_TRANSACTION.md)。两者源码
+入口已交付，但都必须等正式资格报告的 Linux/Docker、跨机器、教师安装和容量硬门通过后才可
+用于生产。
 
 `config show` 必须同时给出 `--effective` 和 `--redact`，不存在关闭脱敏的参数。第一批的 effective 含义是展开配置文件中的 `${NAME}` 与 `${NAME:-default}`；现有校验器通过 `.get()` 使用但未写入配置对象的隐式默认值不会被虚构到输出中。秘密、AccessKey、Cookie、私钥路径、身份、完整 URL/URI、桌面入口、文件系统路径和网络拓扑值（包括私有镜像名、Docker 网络、端口、区域和主机指纹）会被替换为类别占位符；未知字段的键和值默认一并隐藏。
 
@@ -162,4 +173,4 @@ AI 不可以：
 
 ## 实现顺序
 
-第一批已经实现 `doctor`、`config validate/show`、`support-bundle`；除支持包的单个本地输出文件外全部只读。第二批实现 `init` 和安装计划。只有完整备份、回滚和普通 OJ 门禁经过测试后，才实现安装与升级的 `--apply`。
+第一批已经实现 `doctor`、`config validate/show`、`support-bundle`；除支持包的单个本地输出文件外全部只读。第二批实现 `init` 和安装计划。源码层已有独立事务原语 `scripts/stage_v1_source_release.py`：它只安装经外部摘要钉死的 production-qualified 源码 release，以持久 pending/committed/rollback receipt 和原子 `current-source` 指针处理崩溃恢复，不触碰服务。只有服务组合的完整备份、回滚和普通 OJ 门禁经过测试后，才把它接入完整安装与升级的 `--apply`。

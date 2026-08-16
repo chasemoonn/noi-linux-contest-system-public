@@ -17,6 +17,8 @@ _PID_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _SESSION = re.compile(r"^[0-9a-f]{32}$")
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 _REVISION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_MATERIAL_ATTACHMENTS = ("01_比赛题面.pdf", "02_辅助自测数据.tar.gz")
 
 
 class SubmissionConflictError(ValueError):
@@ -57,6 +59,17 @@ CREATE TABLE IF NOT EXISTS contests(
     spare_seats INTEGER NOT NULL DEFAULT 2,
     release_lead_minutes INTEGER NOT NULL DEFAULT 5,
     practice_groups INTEGER NOT NULL DEFAULT 3,
+    time_sync_at_ms INTEGER NOT NULL DEFAULT 0,
+    time_sync_checked_at_ms INTEGER NOT NULL DEFAULT 0,
+    time_sync_error TEXT NOT NULL DEFAULT '',
+    collection_run_id TEXT NOT NULL DEFAULT '',
+    collection_dir TEXT NOT NULL DEFAULT '',
+    collection_receipt_sha256 TEXT NOT NULL DEFAULT '',
+    collection_completed_at_ms INTEGER NOT NULL DEFAULT 0,
+    shutdown_after_ms INTEGER NOT NULL DEFAULT 0,
+    shutdown_verified_at_ms INTEGER NOT NULL DEFAULT 0,
+    workspace_purged_at_ms INTEGER NOT NULL DEFAULT 0,
+    evidence_purged_at_ms INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'registered',
     message TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -99,6 +112,8 @@ CREATE TABLE IF NOT EXISTS web_submissions(
     lease_until REAL NOT NULL DEFAULT 0,
     lease_token TEXT NOT NULL DEFAULT '',
     last_error TEXT NOT NULL DEFAULT '',
+    resolution_attempts INTEGER NOT NULL DEFAULT 0,
+    resolution_after REAL NOT NULL DEFAULT 0,
     delivered_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -142,6 +157,15 @@ CREATE TABLE IF NOT EXISTS artifact_jobs(
 );
 CREATE INDEX IF NOT EXISTS artifact_jobs_tid
 ON artifact_jobs(tid,created_at);
+CREATE TABLE IF NOT EXISTS material_publications(
+    tid TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    publication_id TEXT NOT NULL UNIQUE,
+    receipt_sha256 TEXT NOT NULL,
+    receipt_json TEXT NOT NULL,
+    published_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY(tid,revision)
+);
 CREATE TABLE IF NOT EXISTS seat_pools(
     tid TEXT PRIMARY KEY,
     revision INTEGER NOT NULL,
@@ -180,6 +204,18 @@ CREATE TABLE IF NOT EXISTS seat_notifications(
     PRIMARY KEY(tid,uid,kind,credential_revision),
     UNIQUE(notification_id)
 );
+CREATE TABLE IF NOT EXISTS audit_events(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tid TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at_ms INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS audit_events_tid_time
+ON audit_events(tid,created_at_ms,id);
 """
 
 
@@ -238,6 +274,17 @@ class Store:
             ("spare_seats", "INTEGER NOT NULL DEFAULT 2"),
             ("release_lead_minutes", "INTEGER NOT NULL DEFAULT 5"),
             ("practice_groups", "INTEGER NOT NULL DEFAULT 3"),
+            ("time_sync_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("time_sync_checked_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("time_sync_error", "TEXT NOT NULL DEFAULT ''"),
+            ("collection_run_id", "TEXT NOT NULL DEFAULT ''"),
+            ("collection_dir", "TEXT NOT NULL DEFAULT ''"),
+            ("collection_receipt_sha256", "TEXT NOT NULL DEFAULT ''"),
+            ("collection_completed_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("shutdown_after_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("shutdown_verified_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("workspace_purged_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("evidence_purged_at_ms", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in columns:
                 self._conn.execute(
@@ -301,6 +348,8 @@ class Store:
             ("lease_until", "REAL NOT NULL DEFAULT 0"),
             ("lease_token", "TEXT NOT NULL DEFAULT ''"),
             ("last_error", "TEXT NOT NULL DEFAULT ''"),
+            ("resolution_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("resolution_after", "REAL NOT NULL DEFAULT 0"),
             ("delivered_at", "TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in web_columns:
@@ -458,6 +507,89 @@ class Store:
                 "SELECT * FROM contests WHERE tid=?", (tid,)
             ).fetchone()
         return dict(row) if row else None
+
+    def mark_time_sync(
+        self,
+        tid: str,
+        *,
+        observed_at_ms: int,
+        error: str = "",
+    ) -> None:
+        """Record time-source health without changing the confirmed schedule."""
+        with self._tx() as conn:
+            if error:
+                cur = conn.execute(
+                    "UPDATE contests SET time_sync_checked_at_ms=?,"
+                    "time_sync_error=? WHERE tid=?",
+                    (int(observed_at_ms), str(error)[:1000], str(tid)),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE contests SET time_sync_at_ms=?,"
+                    "time_sync_checked_at_ms=?,time_sync_error='' WHERE tid=?",
+                    (int(observed_at_ms), int(observed_at_ms), str(tid)),
+                )
+        if cur.rowcount != 1:
+            raise KeyError(f"比赛不存在: {tid}")
+
+    def commit_schedule_sync(
+        self,
+        tid: str,
+        *,
+        expected_begin_at_ms: int,
+        expected_end_at_ms: int,
+        begin_at_ms: int,
+        end_at_ms: int,
+        hydro_rule: str,
+        observed_at_ms: int,
+        expected_pool_revision: int,
+        pool_state: dict,
+    ) -> dict:
+        """Atomically publish an OJ schedule and matching seat release boundary."""
+        payload = json.dumps(pool_state, ensure_ascii=False, sort_keys=True)
+        new_revision = int(pool_state.get("revision", -1))
+        with self._immediate_tx() as conn:
+            contest = conn.execute(
+                "SELECT state,begin_at_ms,end_at_ms FROM contests WHERE tid=?",
+                (str(tid),),
+            ).fetchone()
+            if not contest or str(contest["state"]) != "ready":
+                raise SubmissionConflictError("比赛已不在可同步时间的状态")
+            if (
+                int(contest["begin_at_ms"] or 0) != int(expected_begin_at_ms)
+                or int(contest["end_at_ms"] or 0) != int(expected_end_at_ms)
+            ):
+                raise SubmissionConflictError("比赛时间已被其他流程更新")
+            pool = conn.execute(
+                "SELECT revision FROM seat_pools WHERE tid=?", (str(tid),)
+            ).fetchone()
+            if not pool or int(pool["revision"]) != int(expected_pool_revision):
+                raise SubmissionConflictError("座位池已被其他流程更新")
+            if new_revision < int(expected_pool_revision):
+                raise SubmissionConflictError("座位池时间 revision 无效")
+            conn.execute(
+                "UPDATE seat_pools SET revision=?,state_json=?,"
+                "updated_at=datetime('now','localtime') WHERE tid=?",
+                (new_revision, payload, str(tid)),
+            )
+            conn.execute(
+                "UPDATE contests SET begin_at_ms=?,end_at_ms=?,hydro_rule=?,"
+                "time_sync_at_ms=?,time_sync_checked_at_ms=?,"
+                "time_sync_error='',message=? WHERE tid=?",
+                (
+                    int(begin_at_ms),
+                    int(end_at_ms),
+                    str(hydro_rule),
+                    int(observed_at_ms),
+                    int(observed_at_ms),
+                    "已同步 OJ 比赛时间",
+                    str(tid),
+                ),
+            )
+            updated = conn.execute(
+                "SELECT * FROM contests WHERE tid=?", (str(tid),)
+            ).fetchone()
+        return dict(updated)
 
     def replace_contest_pid_map(
         self,
@@ -762,8 +894,116 @@ class Store:
         assert result is not None
         return result
 
-    def approve_artifact(self, tid: str, revision: str, approved_by: str) -> dict:
-        """Atomically promote one reviewed revision and freeze its hashes."""
+    @staticmethod
+    def _canonical_json_sha256(value: object) -> str:
+        payload = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @classmethod
+    def _validate_material_publication(
+        cls,
+        publication: dict,
+        *,
+        tid: str,
+        revision: str,
+        artifact: sqlite3.Row,
+    ) -> tuple[str, str, str]:
+        if not isinstance(publication, dict) or set(publication) != {
+            "ok",
+            "publication_id",
+            "tid",
+            "revision",
+            "attachments",
+            "receipt_sha256",
+        }:
+            raise SubmissionConflictError("OJ 材料发布回执字段不完整")
+        publication_id = str(publication.get("publication_id") or "")
+        receipt_sha256 = str(publication.get("receipt_sha256") or "")
+        if publication.get("ok") is not True:
+            raise SubmissionConflictError("OJ 尚未确认材料发布成功")
+        if not _SHA256.fullmatch(publication_id) or not _SHA256.fullmatch(
+            receipt_sha256
+        ):
+            raise SubmissionConflictError("OJ 材料发布回执摘要无效")
+        if str(publication.get("tid") or "").lower() != str(tid).lower():
+            raise SubmissionConflictError("OJ 材料发布回执比赛不匹配")
+        if str(publication.get("revision") or "") != str(revision):
+            raise SubmissionConflictError("OJ 材料发布回执版本不匹配")
+        attachments = publication.get("attachments")
+        expected = [
+            {
+                "name": _MATERIAL_ATTACHMENTS[0],
+                "sha256": str(artifact["paper_sha256"]),
+                "size": int(artifact["paper_size"]),
+            },
+            {
+                "name": _MATERIAL_ATTACHMENTS[1],
+                "sha256": str(artifact["testdata_sha256"]),
+                "size": int(artifact["testdata_size"]),
+            },
+        ]
+        if attachments != expected:
+            raise SubmissionConflictError("OJ 与桌面材料的字节摘要不一致")
+        receipt = {
+            "publication_id": publication_id,
+            "tid": str(tid).lower(),
+            "revision": str(revision),
+            "attachments": expected,
+        }
+        if cls._canonical_json_sha256(receipt) != receipt_sha256:
+            raise SubmissionConflictError("OJ 材料发布回执校验失败")
+        receipt_json = json.dumps(
+            receipt,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return publication_id, receipt_sha256, receipt_json
+
+    @staticmethod
+    def _decode_material_publication(row: sqlite3.Row | None) -> dict | None:
+        if not row:
+            return None
+        try:
+            receipt = json.loads(row["receipt_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("OJ 材料发布回执已损坏") from exc
+        if not isinstance(receipt, dict):
+            raise RuntimeError("OJ 材料发布回执已损坏")
+        if (
+            receipt.get("publication_id") != row["publication_id"]
+            or Store._canonical_json_sha256(receipt) != row["receipt_sha256"]
+        ):
+            raise RuntimeError("OJ 材料发布回执摘要不一致")
+        return {
+            **receipt,
+            "ok": True,
+            "receipt_sha256": row["receipt_sha256"],
+            "published_at": row["published_at"],
+        }
+
+    def material_publication(self, tid: str, revision: str) -> dict | None:
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM material_publications WHERE tid=? AND revision=?",
+                (str(tid), str(revision)),
+            ).fetchone()
+        return self._decode_material_publication(row)
+
+    def _approve_artifact(
+        self,
+        tid: str,
+        revision: str,
+        approved_by: str,
+        *,
+        publication: dict | None,
+    ) -> dict:
+        """Atomically freeze the OJ receipt and promote one reviewed revision."""
         with self._immediate_tx() as conn:
             contest = conn.execute(
                 "SELECT state,material_state,active_material_revision "
@@ -785,8 +1025,57 @@ class Store:
                 or contest["active_material_revision"] != str(revision)
             ):
                 raise SubmissionConflictError("已批准材料版本与比赛活动版本不一致")
-            if not row["manifest_sha256"] or not row["paper_sha256"]:
-                raise SubmissionConflictError("材料版本缺少 PDF 或完整清单")
+            if (
+                not row["manifest_sha256"]
+                or not row["paper_sha256"]
+                or not row["testdata_sha256"]
+                or int(row["paper_size"]) <= 0
+                or int(row["testdata_size"]) <= 0
+            ):
+                raise SubmissionConflictError("材料版本缺少 PDF、自测数据或完整清单")
+            if publication is not None:
+                publication_id, receipt_sha256, receipt_json = (
+                    self._validate_material_publication(
+                        publication,
+                        tid=str(tid),
+                        revision=str(revision),
+                        artifact=row,
+                    )
+                )
+                existing = conn.execute(
+                    "SELECT * FROM material_publications WHERE tid=? AND revision=?",
+                    (str(tid), str(revision)),
+                ).fetchone()
+                if existing:
+                    if (
+                        existing["publication_id"] != publication_id
+                        or existing["receipt_sha256"] != receipt_sha256
+                        or existing["receipt_json"] != receipt_json
+                    ):
+                        raise SubmissionConflictError("OJ 材料发布回执发生冲突")
+                else:
+                    try:
+                        conn.execute(
+                            "INSERT INTO material_publications("
+                            "tid,revision,publication_id,receipt_sha256,receipt_json) "
+                            "VALUES(?,?,?,?,?)",
+                            (
+                                str(tid),
+                                str(revision),
+                                publication_id,
+                                receipt_sha256,
+                                receipt_json,
+                            ),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise SubmissionConflictError(
+                            "OJ 材料发布编号已被其他版本占用"
+                        ) from exc
+            elif not conn.execute(
+                "SELECT 1 FROM material_publications WHERE tid=? AND revision=?",
+                (str(tid), str(revision)),
+            ).fetchone():
+                raise SubmissionConflictError("尚未保存 OJ 材料发布回执")
             if row["state"] == "approved":
                 approved = row
                 # Idempotent approval must not rewrite approved_at or teacher.
@@ -832,6 +1121,29 @@ class Store:
         result = self._decode_artifact_row(approved)
         assert result is not None
         return result
+
+    def approve_artifact_with_publication(
+        self,
+        tid: str,
+        revision: str,
+        approved_by: str,
+        publication: dict,
+    ) -> dict:
+        return self._approve_artifact(
+            tid,
+            revision,
+            approved_by,
+            publication=publication,
+        )
+
+    def approve_artifact(self, tid: str, revision: str, approved_by: str) -> dict:
+        """Promote a revision only when an OJ publication receipt already exists."""
+        return self._approve_artifact(
+            tid,
+            revision,
+            approved_by,
+            publication=None,
+        )
 
     @staticmethod
     def _encode_artifact_job_details(details: dict | None) -> str:
@@ -1038,6 +1350,47 @@ class Store:
                         "UPDATE contests SET material_state='pending' WHERE tid=? "
                         "AND active_material_revision=''",
                         (tid,),
+                    )
+        return len(rows)
+
+    def recover_interrupted_contests(self, *, observed_at_ms: int | None = None) -> int:
+        """Fail closed prepare work that cannot be resumed after process loss.
+
+        Collection and safe-wait are intentionally left intact: the scheduler
+        has explicit idempotent resume paths for both states. A partially
+        prepared contest has no equivalent completion proof, so it must return
+        to a teacher-visible retry state and the startup frontend reconciler
+        keeps it closed.
+        """
+        observed = (
+            int(time.time() * 1000)
+            if observed_at_ms is None
+            else int(observed_at_ms)
+        )
+        if observed <= 0:
+            raise ValueError("recovery timestamp is invalid")
+        with self._immediate_tx() as conn:
+            rows = conn.execute(
+                "SELECT tid FROM contests WHERE state='preparing'"
+            ).fetchall()
+            if rows:
+                conn.execute(
+                    "UPDATE contests SET state='error',"
+                    "message='编排服务在备赛中重启；入口保持关闭，请重新运行教师测试和备赛' "
+                    "WHERE state='preparing'"
+                )
+                for row in rows:
+                    conn.execute(
+                        "INSERT INTO audit_events(tid,actor,action,outcome,details_json,created_at_ms) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (
+                            str(row["tid"]),
+                            "system",
+                            "contest.recovery.prepare_interrupted",
+                            "failed",
+                            json.dumps({"state": "error"}, sort_keys=True),
+                            observed,
+                        ),
                     )
         return len(rows)
 
@@ -1408,6 +1761,92 @@ class Store:
             )
         return bound
 
+    def commit_pool_repair(
+        self,
+        tid: str,
+        expected_revision: int,
+        state: dict,
+        resource: dict,
+        *,
+        repaired_slot: int,
+    ) -> int:
+        """Atomically restore one isolated slot as a clean verified spare.
+
+        A failed-seat cutover deliberately commits before the old container is
+        removed.  Rebuilding that slot is therefore a second CAS transaction:
+        every unrelated seat must remain byte-for-byte identical, the repaired
+        slot must remain unassigned, and its new runtime resource is inserted
+        only with the verified pool state.
+        """
+        payload = json.dumps(state, ensure_ascii=False, sort_keys=True)
+        new_revision = int(state.get("revision", 0))
+        slot_no = int(repaired_slot)
+        if str(state.get("tid") or "") != str(tid):
+            raise ValueError("座位池比赛标识不一致")
+        if int(resource.get("slot_no", -1)) != slot_no:
+            raise ValueError("修复资源与座位编号不一致")
+        repaired = self._validate_pool_resource(state, resource)
+        if repaired.get("uid") is not None or str(repaired.get("uname") or ""):
+            raise SubmissionConflictError("修复后的备用座位不得绑定学生")
+        with self._immediate_tx() as conn:
+            current = conn.execute(
+                "SELECT revision,state_json FROM seat_pools WHERE tid=?",
+                (str(tid),),
+            ).fetchone()
+            if not current or int(current["revision"]) != int(expected_revision):
+                raise SubmissionConflictError("座位池已被其他操作更新")
+            previous = json.loads(current["state_json"])
+            previous_by_slot = {
+                int(item.get("slot_no", -1)): item
+                for item in previous.get("seats", [])
+            }
+            new_by_slot = {
+                int(item.get("slot_no", -1)): item
+                for item in state.get("seats", [])
+            }
+            before = previous_by_slot.get(slot_no)
+            if set(previous_by_slot) != set(new_by_slot) or not before or \
+                    before.get("state") != "planned" or before.get("uid") is not None:
+                raise SubmissionConflictError("只有已隔离且未绑定的座位可以恢复容量")
+            if any(
+                new_by_slot[number] != item
+                for number, item in previous_by_slot.items()
+                if number != slot_no
+            ):
+                raise SubmissionConflictError("容量恢复不得修改其他座位")
+            if int(repaired.get("failure_count", -1)) != int(
+                before.get("failure_count", -2)
+            ) or str(repaired.get("role") or "") != "spare":
+                raise SubmissionConflictError("容量恢复不得重置故障历史或备用角色")
+            if new_revision <= int(expected_revision):
+                raise SubmissionConflictError("容量恢复后的 revision 无效")
+            exists = conn.execute(
+                "SELECT 1 FROM seat_pool_resources WHERE tid=? AND slot_no=?",
+                (str(tid), slot_no),
+            ).fetchone()
+            if exists:
+                raise SubmissionConflictError("待恢复座位仍残留旧连接资源")
+            conn.execute(
+                "INSERT INTO seat_pool_resources("
+                "tid,slot_no,token,vnc_pass,submit_token,candidate,container,cip,"
+                "image_digest,material_digest,credential_revision) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(tid), slot_no, str(resource["token"]),
+                    str(resource["vnc_pass"]), str(resource["submit_token"]),
+                    str(resource["candidate"]), str(resource["container"]),
+                    str(resource["cip"]), str(resource["image_digest"]),
+                    str(resource["material_digest"]),
+                    int(resource.get("credential_revision", 1)),
+                ),
+            )
+            conn.execute(
+                "UPDATE seat_pools SET revision=?,state_json=?,"
+                "updated_at=datetime('now','localtime') WHERE tid=?",
+                (new_revision, payload, str(tid)),
+            )
+        return new_revision
+
     def seat_pool_resource(self, tid: str, slot_no: int) -> dict | None:
         with self._tx() as conn:
             row = conn.execute(
@@ -1491,6 +1930,98 @@ class Store:
         with self._tx() as conn:
             rows = conn.execute(sql, args).fetchall()
         return [dict(row) for row in rows]
+
+    def contest_notification_health(self, tid: str) -> dict:
+        """Return non-sensitive notification counts for one contest."""
+        counts = {
+            "pending": 0,
+            "retry": 0,
+            "permanent_failed": 0,
+            "sent": 0,
+        }
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT state,COUNT(*) AS total FROM seat_notifications "
+                "WHERE tid=? GROUP BY state",
+                (str(tid),),
+            ).fetchall()
+        for row in rows:
+            counts[str(row["state"])] = int(row["total"])
+        return {
+            "counts": counts,
+            "safe": sum(
+                counts.get(state, 0)
+                for state in ("pending", "retry", "permanent_failed")
+            )
+            == 0,
+        }
+
+    def retry_failed_seat_notifications(self, tid: str) -> int:
+        """Requeue only failed notifications for currently released credentials.
+
+        Old credential revisions remain immutable audit evidence.  Repeated
+        teacher clicks are idempotent because only ``permanent_failed`` rows
+        transition back to ``pending``; Hydro still owns the final
+        notification-id idempotency boundary.
+        """
+
+        with self._tx() as conn:
+            contest = conn.execute(
+                "SELECT state FROM contests WHERE tid=?", (str(tid),)
+            ).fetchone()
+            if not contest:
+                raise KeyError("比赛不存在")
+            if str(contest["state"]) != "ready":
+                raise SubmissionConflictError("只有已就绪比赛可以重试入口通知")
+            pool = conn.execute(
+                "SELECT state_json FROM seat_pools WHERE tid=?", (str(tid),)
+            ).fetchone()
+            if not pool:
+                raise SubmissionConflictError("比赛缺少可重试的座位池")
+            try:
+                state = json.loads(pool["state_json"])
+                seats = state.get("seats") if isinstance(state, dict) else None
+                if not isinstance(seats, list):
+                    raise ValueError("invalid seats")
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise SubmissionConflictError("座位池状态无效，拒绝重试通知") from exc
+            resources = {
+                int(row["slot_no"]): int(row["credential_revision"])
+                for row in conn.execute(
+                    "SELECT slot_no,credential_revision FROM seat_pool_resources "
+                    "WHERE tid=?",
+                    (str(tid),),
+                ).fetchall()
+            }
+            keys: set[tuple[int, int]] = set()
+            for seat in seats:
+                if not isinstance(seat, dict) or seat.get("state") != "released":
+                    continue
+                uid, slot_no = seat.get("uid"), seat.get("slot_no")
+                if (
+                    not isinstance(uid, int)
+                    or isinstance(uid, bool)
+                    or uid <= 1
+                    or not isinstance(slot_no, int)
+                    or isinstance(slot_no, bool)
+                    or slot_no <= 0
+                    or slot_no not in resources
+                ):
+                    raise SubmissionConflictError(
+                        "已发放座位与当前凭据不一致，拒绝重试通知"
+                    )
+                keys.add((uid, resources[slot_no]))
+            changed = 0
+            for uid, credential_revision in sorted(keys):
+                cur = conn.execute(
+                    "UPDATE seat_notifications SET state='pending',last_error='',"
+                    "updated_at=datetime('now','localtime') WHERE tid=? AND uid=? "
+                    "AND kind='seat_ready' AND credential_revision=? "
+                    "AND state='permanent_failed'",
+                    (str(tid), int(uid), int(credential_revision)),
+                )
+                changed += int(cur.rowcount)
+        return changed
 
     def seat_notification_health(self) -> dict:
         """Return non-sensitive health for each currently released credential.
@@ -1634,11 +2165,130 @@ class Store:
             rows = conn.execute(sql, args).fetchall()
         return [dict(row) for row in rows]
 
+    def active_seat_count(self) -> int:
+        """Count unique bound containers for contests not yet safely ended."""
+        active = ("registered", "preparing", "ready", "collecting", "safe_wait")
+        marks = ",".join("?" for _ in active)
+        with self._tx() as conn:
+            return int(
+                conn.execute(
+                    f"SELECT COUNT(DISTINCT s.container) FROM seats s "
+                    f"JOIN contests c ON c.tid=s.tid WHERE c.state IN ({marks})",
+                    active,
+                ).fetchone()[0]
+            )
+
+    @staticmethod
+    def _audit_details(details: dict | None) -> dict:
+        """Accept a deliberately small, non-sensitive audit payload."""
+        payload = dict(details or {})
+        forbidden = (
+            "password",
+            "secret",
+            "token",
+            "cookie",
+            "authorization",
+            "source",
+            "code",
+        )
+        cleaned: dict[str, str | int | bool | None] = {}
+        for raw_key, raw_value in payload.items():
+            key = str(raw_key)
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key):
+                raise ValueError("audit detail key is invalid")
+            if any(word in key.casefold() for word in forbidden):
+                raise ValueError("audit detail contains a forbidden key")
+            if raw_value is None or isinstance(raw_value, (bool, int)):
+                cleaned[key] = raw_value
+            elif isinstance(raw_value, str) and len(raw_value) <= 256:
+                cleaned[key] = raw_value
+            else:
+                raise ValueError("audit detail value is invalid")
+        return cleaned
+
+    def append_audit(
+        self,
+        *,
+        actor: str,
+        action: str,
+        outcome: str,
+        tid: str = "",
+        details: dict | None = None,
+        created_at_ms: int | None = None,
+    ) -> int:
+        actor_value = str(actor).strip()
+        action_value = str(action).strip()
+        outcome_value = str(outcome).strip()
+        tid_value = str(tid).strip()
+        if (
+            not actor_value
+            or len(actor_value) > 128
+            or any(ord(character) < 32 for character in actor_value)
+        ):
+            raise ValueError("audit actor is invalid")
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]{1,127}", action_value):
+            raise ValueError("audit action is invalid")
+        if outcome_value not in {"requested", "accepted", "completed", "failed"}:
+            raise ValueError("audit outcome is invalid")
+        if tid_value and not re.fullmatch(r"[0-9a-f]{24}", tid_value):
+            raise ValueError("audit tid is invalid")
+        payload = self._audit_details(details)
+        timestamp = int(time.time() * 1000) if created_at_ms is None else int(created_at_ms)
+        if timestamp <= 0:
+            raise ValueError("audit timestamp is invalid")
+        with self._immediate_tx() as conn:
+            cur = conn.execute(
+                "INSERT INTO audit_events(tid,actor,action,outcome,details_json,created_at_ms) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    tid_value,
+                    actor_value,
+                    action_value,
+                    outcome_value,
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    timestamp,
+                ),
+            )
+        return int(cur.lastrowid)
+
+    def audit_events(self, tid: str = "", *, limit: int = 500) -> list[dict]:
+        maximum = int(limit)
+        if not 1 <= maximum <= 5000:
+            raise ValueError("audit limit is invalid")
+        sql = "SELECT * FROM audit_events"
+        args: tuple[object, ...]
+        if tid:
+            sql += " WHERE tid=?"
+            args = (str(tid), maximum)
+        else:
+            args = (maximum,)
+        sql += " ORDER BY created_at_ms DESC,id DESC LIMIT ?"
+        with self._tx() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        events: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            item["details"] = json.loads(item.pop("details_json") or "{}")
+            events.append(item)
+        return events
+
     def set_state(self, tid: str, state: str, message: str = "") -> None:
         with self._tx() as conn:
             conn.execute(
                 "UPDATE contests SET state=?, message=? WHERE tid=?",
                 (state, message, tid),
+            )
+            conn.execute(
+                "INSERT INTO audit_events(tid,actor,action,outcome,details_json,created_at_ms) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    str(tid),
+                    "system",
+                    "contest.state.set",
+                    "completed",
+                    json.dumps({"state": str(state)}, sort_keys=True),
+                    int(time.time() * 1000),
+                ),
             )
 
     def transition(
@@ -1658,6 +2308,133 @@ class Store:
                 f"WHERE tid=? AND state IN ({marks})",
                 (to_state, message, tid, *states),
             )
+            if cur.rowcount == 1:
+                conn.execute(
+                    "INSERT INTO audit_events(tid,actor,action,outcome,details_json,created_at_ms) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (
+                        str(tid),
+                        "system",
+                        "contest.state.transition",
+                        "completed",
+                        json.dumps(
+                            {"from": ",".join(sorted(states)), "to": str(to_state)},
+                            sort_keys=True,
+                        ),
+                        int(time.time() * 1000),
+                    ),
+                )
+        return cur.rowcount == 1
+
+    def enter_safe_wait(
+        self,
+        tid: str,
+        *,
+        run_id: str,
+        collection_dir: str,
+        receipt_sha256: str,
+        completed_at_ms: int,
+        shutdown_after_ms: int,
+        message: str,
+    ) -> bool:
+        """Commit durable collection evidence before the delayed shutdown."""
+        if not _REVISION.fullmatch(str(run_id)):
+            raise ValueError("collection run id is invalid")
+        directory = str(collection_dir).strip()
+        digest = str(receipt_sha256).lower()
+        completed = int(completed_at_ms)
+        shutdown_after = int(shutdown_after_ms)
+        if not directory or not _SHA256.fullmatch(digest):
+            raise ValueError("collection evidence is invalid")
+        if completed <= 0 or shutdown_after < completed:
+            raise ValueError("safe-wait shutdown boundary is invalid")
+        with self._immediate_tx() as conn:
+            cur = conn.execute(
+                "UPDATE contests SET state='safe_wait',message=?,"
+                "collection_run_id=?,collection_dir=?,"
+                "collection_receipt_sha256=?,collection_completed_at_ms=?,"
+                "shutdown_after_ms=?,shutdown_verified_at_ms=0 "
+                "WHERE tid=? AND state='collecting'",
+                (
+                    str(message),
+                    str(run_id),
+                    directory,
+                    digest,
+                    completed,
+                    shutdown_after,
+                    str(tid),
+                ),
+            )
+        return cur.rowcount == 1
+
+    def mark_safe_ended(self, tid: str, *, observed_at_ms: int, message: str) -> bool:
+        """Record a verified delayed shutdown; never bypass the time boundary."""
+        observed = int(observed_at_ms)
+        with self._immediate_tx() as conn:
+            cur = conn.execute(
+                "UPDATE contests SET state='safe_ended',message=?,"
+                "shutdown_verified_at_ms=? WHERE tid=? AND state='safe_wait' "
+                "AND shutdown_after_ms>0 AND shutdown_after_ms<=?",
+                (str(message), observed, str(tid), observed),
+            )
+        return cur.rowcount == 1
+
+    def retention_candidates(
+        self,
+        *,
+        now_ms: int,
+        workspace_retention_days: int,
+        evidence_retention_days: int,
+    ) -> list[dict]:
+        """Return only safely ended contests whose local retention boundary passed."""
+        now_value = int(now_ms)
+        workspace_ms = int(workspace_retention_days) * 86_400_000
+        evidence_ms = int(evidence_retention_days) * 86_400_000
+        if workspace_ms <= 0 or evidence_ms < workspace_ms:
+            raise ValueError("retention boundaries are invalid")
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT * FROM contests WHERE state IN ('safe_ended','done') "
+                "AND shutdown_verified_at_ms>0 AND ("
+                "(workspace_purged_at_ms=0 AND shutdown_verified_at_ms<=?) OR "
+                "(evidence_purged_at_ms=0 AND shutdown_verified_at_ms<=?)) "
+                "ORDER BY shutdown_verified_at_ms,tid",
+                (now_value - workspace_ms, now_value - evidence_ms),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_retention_purged(
+        self, tid: str, *, kind: str, observed_at_ms: int
+    ) -> bool:
+        column = {
+            "workspace": "workspace_purged_at_ms",
+            "evidence": "evidence_purged_at_ms",
+        }.get(str(kind))
+        if not column:
+            raise ValueError("retention kind is invalid")
+        observed = int(observed_at_ms)
+        if observed <= 0:
+            raise ValueError("retention timestamp is invalid")
+        with self._immediate_tx() as conn:
+            cur = conn.execute(
+                f"UPDATE contests SET {column}=? WHERE tid=? "
+                "AND state IN ('safe_ended','done') AND shutdown_verified_at_ms>0 "
+                f"AND {column}=0",
+                (observed, str(tid)),
+            )
+            if cur.rowcount == 1:
+                conn.execute(
+                    "INSERT INTO audit_events(tid,actor,action,outcome,details_json,created_at_ms) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (
+                        str(tid),
+                        "system",
+                        "contest.retention.purge",
+                        "completed",
+                        json.dumps({"kind": str(kind)}, sort_keys=True),
+                        observed,
+                    ),
+                )
         return cur.rowcount == 1
 
     def reset_seats(self, tid: str) -> None:
@@ -1686,6 +2463,7 @@ class Store:
             "sending": 0,
             "retry": 0,
             "permanent_failed": 0,
+            "ambiguous": 0,
             "submitted": 0,
         }
         oldest_waiting_ms = 0
@@ -1697,13 +2475,37 @@ class Store:
         for row in rows:
             state = str(row["judge_state"])
             counts[state] = int(row["total"])
-            if state in {"pending", "sending", "retry", "permanent_failed"}:
+            if state in {"pending", "sending", "retry", "permanent_failed", "ambiguous"}:
                 accepted = int(row["oldest"] or 0)
                 if accepted > 0:
                     oldest_waiting_ms = max(
                         oldest_waiting_ms, max(0, current_ms - accepted)
                     )
         return {"counts": counts, "oldest_waiting_ms": oldest_waiting_ms}
+
+    def contest_delivery_health(self, tid: str) -> dict:
+        """Return exact delivery states for one contest without source text."""
+        counts = {
+            "pending": 0,
+            "sending": 0,
+            "retry": 0,
+            "permanent_failed": 0,
+            "ambiguous": 0,
+            "submitted": 0,
+        }
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT judge_state,COUNT(*) AS total FROM web_submissions "
+                "WHERE tid=? AND submission_id<>'' GROUP BY judge_state",
+                (str(tid),),
+            ).fetchall()
+        for row in rows:
+            counts[str(row["judge_state"])] = int(row["total"])
+        unfinished = sum(
+            int(counts.get(state, 0))
+            for state in ("pending", "sending", "retry", "permanent_failed", "ambiguous")
+        )
+        return {"counts": counts, "unfinished": unfinished, "safe": unfinished == 0}
 
     def add_seat(
         self,
@@ -2125,24 +2927,117 @@ class Store:
         error: str,
         *,
         retry_at: float | None,
+        ambiguous: bool = False,
+        resolution_after: float | None = None,
     ) -> dict:
-        state = "permanent_failed" if retry_at is None else "retry"
+        if ambiguous and retry_at is not None:
+            raise ValueError("an ambiguous submission cannot be scheduled for retry")
+        state = "ambiguous" if ambiguous else (
+            "permanent_failed" if retry_at is None else "retry"
+        )
+        if resolution_after is not None and not ambiguous:
+            raise ValueError("only ambiguous submissions have a resolution schedule")
         next_retry = 0 if retry_at is None else float(retry_at)
+        next_resolution = 0 if resolution_after is None else float(resolution_after)
         with self._immediate_tx() as conn:
             cur = conn.execute(
                 "UPDATE web_submissions SET judge_state=?,next_retry_at=?,"
-                "lease_until=0,lease_token='',last_error=? "
+                "lease_until=0,lease_token='',last_error=?,resolution_after=? "
                 "WHERE id=? AND judge_state='sending' AND lease_token=?",
                 (
                     state,
                     next_retry,
                     str(error)[:4000],
+                    next_resolution,
                     int(submission_row_id),
                     str(lease_token),
                 ),
             )
             if cur.rowcount != 1:
                 raise SubmissionLeaseLostError("submission delivery lease was lost")
+            row = conn.execute(
+                "SELECT * FROM web_submissions WHERE id=?",
+                (int(submission_row_id),),
+            ).fetchone()
+        return dict(row)
+
+    def claim_ambiguous_web_submission(
+        self,
+        *,
+        now: float | None = None,
+        check_seconds: float = 30.0,
+    ) -> dict | None:
+        """Claim one due row for a read-only OJ correlation check."""
+        timestamp = time.time() if now is None else float(now)
+        delay = float(check_seconds)
+        if delay <= 0:
+            raise ValueError("check_seconds must be positive")
+        with self._immediate_tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM web_submissions WHERE judge_state='ambiguous' "
+                "AND resolution_after>0 AND resolution_after<=? ORDER BY id LIMIT 1",
+                (timestamp,),
+            ).fetchone()
+            if not row:
+                return None
+            cur = conn.execute(
+                "UPDATE web_submissions SET resolution_attempts=resolution_attempts+1,"
+                "resolution_after=? WHERE id=? AND judge_state='ambiguous' "
+                "AND resolution_after>0 AND resolution_after<=?",
+                (timestamp + delay, int(row["id"]), timestamp),
+            )
+            if cur.rowcount != 1:
+                return None
+            claimed = conn.execute(
+                "SELECT * FROM web_submissions WHERE id=?", (int(row["id"]),)
+            ).fetchone()
+        return dict(claimed)
+
+    def finish_ambiguous_web_submission(
+        self,
+        submission_row_id: int,
+        submission_id: str,
+        *,
+        rid: str | None = None,
+        resolution_status: str = "pending",
+        now: float | None = None,
+    ) -> dict:
+        """Persist one exact read-only correlation result.
+
+        Only a unique 24-hex RID may transition an ambiguous row to submitted.
+        All other results remain fail-closed and cannot enter the delivery queue.
+        """
+        allowed = {"missing", "multiple", "pending", "unknown", "unsupported", "unavailable"}
+        timestamp = time.time() if now is None else float(now)
+        with self._immediate_tx() as conn:
+            if rid is not None:
+                rid_text = str(rid).lower()
+                if not re.fullmatch(r"[0-9a-f]{24}", rid_text):
+                    raise ValueError("resolved rid must be 24 lowercase hexadecimal characters")
+                delivered = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
+                cur = conn.execute(
+                    "UPDATE web_submissions SET judge_state='submitted',rid=?,"
+                    "last_error='',resolution_after=0,delivered_at=? "
+                    "WHERE id=? AND submission_id=? AND judge_state='ambiguous'",
+                    (rid_text, delivered, int(submission_row_id), str(submission_id)),
+                )
+            else:
+                status = str(resolution_status)
+                if status not in allowed:
+                    raise ValueError("invalid ambiguous resolution status")
+                cur = conn.execute(
+                    "UPDATE web_submissions SET last_error=?,resolution_after=? "
+                    "WHERE id=? AND submission_id=? AND judge_state='ambiguous'",
+                    (
+                        f"OJ 只读核对：{status}",
+                        (-1 if status in {"missing", "multiple", "unknown", "unsupported"}
+                         else timestamp + 30.0),
+                        int(submission_row_id),
+                        str(submission_id),
+                    ),
+                )
+            if cur.rowcount != 1:
+                raise SubmissionLeaseLostError("ambiguous submission state changed")
             row = conn.execute(
                 "SELECT * FROM web_submissions WHERE id=?",
                 (int(submission_row_id),),
@@ -2168,6 +3063,10 @@ class Store:
             if not target["submission_id"] or target["judge_state"] == "local":
                 raise ValueError("legacy local-only submission has no Hydro payload")
             if target["judge_state"] == "submitted" and target["rid"]:
+                return dict(target)
+            if target["judge_state"] == "ambiguous":
+                # A final collection pass cannot turn an unknown OJ insert
+                # outcome into permission to create another record.
                 return dict(target)
             conn.execute(
                 "UPDATE web_submissions SET judge_state='pending',"

@@ -12,6 +12,8 @@ __pycache__/
 *.jsonl
 *.zip
 *.tgz
+.tmp-candidate-build/
+.tmp-tests/
 
 # Local/offline Docker image bundles are build artifacts, never source files.
 /local-release/

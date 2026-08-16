@@ -115,6 +115,24 @@ class MaterialsTests(unittest.TestCase):
         self.assertEqual(name, "自测数据.zip")
         self.assertEqual(count, 4)
         self.assertEqual(expanded, 10)
+        self.assertEqual(payload[4:8], b"\0\0\0\0")
+        repeated = read_testdata_upload(
+            self._zip(
+                {
+                    "practice/apple/1.in": b"1 2\n",
+                    "practice/apple/1.ans": b"3\n",
+                    "practice/banana/1.in": b"4\n",
+                    "practice/banana/1.out": b"8\n",
+                }
+            ),
+            "自测数据.zip",
+            1024 * 1024,
+            1024 * 1024,
+            20,
+            ["apple", "banana"],
+        )
+        self.assertEqual(repeated[1], payload)
+        self.assertEqual(repeated[2], digest)
         with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
             self.assertEqual(archive.extractfile("apple/1.in").read(), b"1 2\n")
             self.assertEqual(archive.getmember("banana/1.out").mode, 0o444)

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "v1-private-clean-install-plan.schema.json",
+  "title": "NOI Linux V1 private clean install plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "operation", "plan_id", "scope", "source_plan_id", "source_release", "candidate", "candidate_manifest_sha256", "backup_directory", "backup_manifest_sha256", "transaction_directory", "install_root", "expected_contract", "private_artifact_sha256", "desired_controller_definition", "desired_config", "desired_env", "desired_plugin_env", "desired_plugin_token", "project_config", "project_env", "database", "caddyfile", "snippet", "hydro_domain", "frontend_domain", "orchestrator_upstream", "executables"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "operation": {"const": "clean-install"},
+    "plan_id": {"$ref": "#/$defs/hex64"},
+    "scope": {"enum": ["production", "qualification-lab"]},
+    "source_plan_id": {"$ref": "#/$defs/hex64"},
+    "source_release": {"type": "string", "pattern": "^[a-f0-9]{40}-[a-f0-9]{12}$"},
+    "candidate_manifest_sha256": {"$ref": "#/$defs/hex64"},
+    "backup_manifest_sha256": {"$ref": "#/$defs/hex64"},
+    "candidate": {"$ref": "#/$defs/path"},
+    "backup_directory": {"$ref": "#/$defs/path"},
+    "transaction_directory": {"$ref": "#/$defs/path"},
+    "install_root": {"$ref": "#/$defs/path"},
+    "expected_contract": {"$ref": "#/$defs/path"},
+    "desired_controller_definition": {"$ref": "#/$defs/path"},
+    "desired_config": {"$ref": "#/$defs/path"},
+    "desired_env": {"$ref": "#/$defs/path"},
+    "desired_plugin_env": {"$ref": "#/$defs/path"},
+    "desired_plugin_token": {"$ref": "#/$defs/path"},
+    "private_artifact_sha256": {"type": "object", "additionalProperties": false, "required": ["expected_contract", "desired_controller_definition", "desired_config", "desired_env", "desired_plugin_env", "desired_plugin_token"], "properties": {"expected_contract": {"$ref": "#/$defs/hex64"}, "desired_controller_definition": {"$ref": "#/$defs/hex64"}, "desired_config": {"$ref": "#/$defs/hex64"}, "desired_env": {"$ref": "#/$defs/hex64"}, "desired_plugin_env": {"$ref": "#/$defs/hex64"}, "desired_plugin_token": {"$ref": "#/$defs/hex64"}}},
+    "project_config": {"$ref": "#/$defs/path"},
+    "project_env": {"$ref": "#/$defs/path"},
+    "database": {"$ref": "#/$defs/path"},
+    "caddyfile": {"$ref": "#/$defs/path"},
+    "snippet": {"$ref": "#/$defs/path"},
+    "hydro_domain": {"type": "string"},
+    "frontend_domain": {"type": "string"},
+    "orchestrator_upstream": {"const": "http://127.0.0.1:8600"},
+    "executables": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python", "bash", "pm2", "node", "docker_socket"],
+      "properties": {
+        "python": {"$ref": "#/$defs/path"},
+        "bash": {"$ref": "#/$defs/path"},
+        "pm2": {"$ref": "#/$defs/path"},
+        "node": {"$ref": "#/$defs/path"},
+        "docker_socket": {"$ref": "#/$defs/path"}
+      }
+    }
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "path": {"type": "string", "pattern": "^/[^\\u0000]*$"}
+  }
+}

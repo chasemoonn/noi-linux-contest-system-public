@@ -153,6 +153,7 @@ class FirefoxCookieReleaseGateTests(unittest.TestCase):
             "cookie persistence after restart",
             'url=http://127.0.0.2:',
             '"--profile"',
+            "EVENT_TIMEOUT_SECONDS = 120",
         ):
             self.assertIn(required, source)
 
@@ -168,6 +169,41 @@ class FirefoxCookieReleaseGateTests(unittest.TestCase):
         self.assertIn('"AcceptThirdParty": "never"', verifier)
         self.assertIn("verify-firefox-cookie-runtime.py", verifier)
         self.assertIn('firefox --version | grep -Fq "Mozilla Firefox 79."', verifier)
+
+
+class DesktopPermissionReleaseGateTests(unittest.TestCase):
+    def test_root_only_release_staging_cannot_make_student_paths_private(self):
+        dockerfile = (REPO_ROOT / "noi-linux-official" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        verifier = (REPO_ROOT / "deploy" / "verify-contest-image-local.sh").read_text(
+            encoding="utf-8"
+        )
+        for path in (
+            "/etc /etc/supervisor /etc/supervisor/conf.d",
+            "/etc/xdg /etc/xdg/autostart",
+            "/opt /opt/contest-template /opt/contest-template/Desktop",
+            "/usr /usr/local /usr/local/bin",
+        ):
+            self.assertIn(path, dockerfile)
+            self.assertIn(path, verifier)
+        self.assertIn(
+            "/etc/xdg/autostart/noi-contest-desktop-finalize.desktop",
+            dockerfile,
+        )
+        self.assertIn("su -s /bin/bash nobody", verifier)
+
+    def test_source_revision_is_bound_after_expensive_desktop_layers(self):
+        dockerfile = (REPO_ROOT / "noi-linux-official" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        policy_step = dockerfile.index(
+            "RUN python3 /usr/local/bin/install-firefox-cookie-policy.py"
+        )
+        revision_arg = dockerfile.index("ARG NOI_SOURCE_REVISION")
+        revision_label = dockerfile.index("org.opencontainers.image.revision")
+        self.assertLess(policy_step, revision_arg)
+        self.assertLess(revision_arg, revision_label)
 
 
 if __name__ == "__main__":

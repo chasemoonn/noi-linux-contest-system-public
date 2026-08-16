@@ -10,7 +10,7 @@
 - 清单固定镜像标签、不可变 Docker image ID、全部镜像标签、归档字节数和归档 SHA256。
 - 包内 `SHA256SUMS` 同时覆盖镜像归档、manifest、Schema 和导入脚本；公开 Release 清单分别固定包内 `manifest.json` 与原始 `SHA256SUMS` 的 SHA256。导入器拒绝符号链接和清单外条目，先把经逐文件摘要验证的字节复制到权限收紧的私有临时快照，再访问 Docker daemon。
 - 导出者必须显式填写构建该桌面镜像的 40 位 Git commit；不能把当前目录 HEAD 猜成镜像来源。
-- 导入先验证清单、归档 SHA256/大小以及 Docker archive 内部的标签和 image ID，然后才调用 `docker image load`；导入后再次验证标签、image ID 和全部 labels。
+- 导入先验证清单、归档 SHA256/大小，以及 Docker archive 内部从 image ID 到镜像 config 的完整摘要关系和标签，然后才调用 `docker image load`；既支持传统 Docker 的 config-digest image ID，也支持 containerd image store 的 OCI manifest/index image ID。导入后再次验证标签、image ID 和全部 labels。
 - SHA256 只能发现传输损坏或与可信清单不一致，不能单独证明发布者身份。必须从项目的正式 GitHub Release 取得公开 `release-manifest.json`，并从该 Release 对应的固定 tag/40 位 commit 运行仓库内导入器；私发镜像包不能替代这个信任起点。
 - 导入期间不要并发执行 `docker tag`、`docker image load` 或 `docker image rm`。
 
@@ -65,7 +65,7 @@ bash /opt/hydro-noi-contest-kit/scripts/import-local-image-bundle.sh \
   --release-manifest /opt/releases/0.1.0-alpha.1/release-manifest.json
 ```
 
-包内的 `import-local-image-bundle.sh` 是被校验的交付内容之一，可用于审计或与可信仓库版本比对，但不能作为最初的信任入口。
+包内的 `import-local-image-bundle.sh` 是被校验的交付内容之一，可用于审计或与可信仓库版本比对，但不能作为最初的信任入口。实际执行的可信仓库导入器还会调用同一固定 commit 下的 `scripts/verify_docker_archive_identity.py`；两者必须来自同一检出，不能把包内导入器或另行取得的校验器拼接执行。
 
 导入器用 no-follow、regular-file 和有界读取规则取得外部 Release 清单。随后前后两次枚举包的物理目录，要求恰好五项：归档、`manifest.json`、Schema、导入器和 `SHA256SUMS`；校验表本身只列出前四项。它先用 Release 清单固定原始 `manifest.json` 和原始 `SHA256SUMS` 字节，再用该校验表固定其余内容，并在私有临时目录形成快照。Release 与 bundle 的源码 revision、固定非 `latest` 镜像 tag、image ID、desktop contract 和 ISO SHA256 任一不一致，或出现符号链接、额外条目、文件缺失及内容变化，都会在第一次 Docker daemon 调用前停止。后续解析和 `docker image load` 只读取快照，避免校验后原包被替换。导入期间临时目录还需容纳一份完整归档，成功或失败退出时会自动删除。
 

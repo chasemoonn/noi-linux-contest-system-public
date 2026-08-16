@@ -25,7 +25,7 @@ class RootfsAttestationScriptTests(unittest.TestCase):
             self.source,
         )
         self.assertIn(
-            'EXPECTED_ISO_SHA256="C8824240736352E5E4AAF3F6532B40961F75FA9F23D670BB78881355A49D5878"',
+            'EXPECTED_ISO_SHA256="c8824240736352e5e4aaf3f6532b40961f75fa9f23d670bb78881355a49d5878"',
             self.source,
         )
         self.assertIn('current_id="$(image_id "${TARGET_TAG}")"', self.source)

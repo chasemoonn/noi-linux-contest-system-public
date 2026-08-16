@@ -7,8 +7,8 @@ from services.seat_pool import (
     PoolConfigurationError,
     RevisionConflictError,
     SeatPoolState,
-    TeacherApprovalRequiredError,
     TooEarlyToReleaseError,
+    desired_capacity,
     reservation_state,
 )
 
@@ -47,7 +47,7 @@ class SeatPoolTests(unittest.TestCase):
         ).state
 
     def test_capacity_and_spare_validation(self):
-        for maximum, spares in ((0, 0), (1, -1), (2, 3)):
+        for maximum, spares in ((-1, 0), (1, -1)):
             with self.subTest(maximum=maximum, spares=spares):
                 with self.assertRaises(PoolConfigurationError):
                     self.make_pool(maximum, spares)
@@ -129,25 +129,85 @@ class SeatPoolTests(unittest.TestCase):
         self.assertEqual(result.value["state"], "released")
         self.assertEqual(result.value["released_at_ms"], RELEASE)
 
-    def test_join_after_start_requires_explicit_teacher_approval(self):
+    def test_join_after_start_is_released_without_second_approval(self):
         pool = self.verified(self.make_pool(), 1, "s1")
-        with self.assertRaises(TeacherApprovalRequiredError):
-            pool.reserve(
-                9,
-                "carol",
-                now_ms=BEGIN,
-                command_id="late-no",
-                expected_revision=pool.revision,
-            )
-        approved = pool.reserve(
+        joined = pool.reserve(
             9,
             "carol",
             now_ms=BEGIN,
-            teacher_approved=True,
-            command_id="late-yes",
+            command_id="late-join",
             expected_revision=pool.revision,
         )
-        self.assertEqual(approved.value["state"], "released")
+        self.assertEqual(joined.value["state"], "released")
+
+    def test_empty_roster_can_keep_verified_standby_seats(self):
+        pool = self.make_pool(0, 2)
+        self.assertEqual(pool.max_participants, 0)
+        self.assertEqual(pool.spare_count, 2)
+        self.assertEqual([seat.role for seat in pool.seats], ["spare", "spare"])
+
+    def test_empty_roster_pool_can_grow_one_formal_seat_without_losing_standbys(self):
+        pool = self.make_pool(0, 2)
+        grown = pool.reconcile_roster_capacity(
+            1,
+            command_id="first-registration",
+            expected_revision=pool.revision,
+        )
+        self.assertEqual(grown.state.max_participants, 1)
+        self.assertEqual(grown.state.spare_count, 2)
+        self.assertEqual(len(grown.state.seats), 3)
+        self.assertEqual(grown.value["added"][0]["role"], "primary")
+
+    def test_schedule_extension_changes_release_boundary_without_moving_seats(self):
+        pool = self.verified(self.make_pool(1, 2), 1, "main")
+        pool = pool.reserve(
+            17,
+            "kate",
+            now_ms=RELEASE - 1,
+            command_id="kate-before-extension",
+            expected_revision=pool.revision,
+        ).state
+        before = pool.seats
+        changed = pool.reschedule(
+            begin_at_ms=BEGIN + 600_000,
+            command_id="extend-ten-minutes",
+            expected_revision=pool.revision,
+        )
+        self.assertEqual(changed.state.seats, before)
+        self.assertEqual(changed.state.begin_at_ms, BEGIN + 600_000)
+        self.assertEqual(changed.state.release_at_ms, RELEASE + 600_000)
+        self.assertEqual(changed.state.assignment(17).state, "reserved")
+
+    def test_roster_capacity_grows_without_moving_existing_assignment(self):
+        pool = self.verified(self.make_pool(1, 2), 1, "main")
+        pool = pool.reserve(
+            17,
+            "kate",
+            now_ms=RELEASE - 1,
+            command_id="kate-auto",
+            expected_revision=pool.revision,
+        ).state
+        before = pool.seats
+        grown = pool.reconcile_roster_capacity(
+            21,
+            command_id="roster-21",
+            expected_revision=pool.revision,
+        )
+        self.assertEqual(grown.state.seats[: len(before)], before)
+        self.assertEqual(grown.state.assignment(17).slot_no, 1)
+        self.assertEqual(grown.state.max_participants, 21)
+        self.assertEqual(grown.state.spare_count, 3)
+        self.assertEqual(len(grown.value["added"]), 21)
+        self.assertEqual(grown.value["target_main"], 21)
+        self.assertEqual(grown.value["target_spares"], 3)
+
+        unchanged = grown.state.reconcile_roster_capacity(
+            5,
+            command_id="roster-shrunk",
+            expected_revision=grown.state.revision,
+        )
+        self.assertIs(unchanged.state, grown.state)
+        self.assertEqual(unchanged.value["added"], [])
 
     def test_reservation_stays_on_same_seat(self):
         pool = self.verified(self.make_pool(), 1, "s1")
@@ -206,11 +266,13 @@ class SeatPoolTests(unittest.TestCase):
         )
         self.assertEqual(replaced.value["replacement"]["slot_no"], 3)
         self.assertEqual(replaced.value["replacement"]["state"], "released")
+        self.assertEqual(replaced.value["replacement"]["role"], "primary")
         self.assertEqual(replaced.state.assignment(13).slot_no, 3)
         failed = replaced.state.seat(1)
         self.assertEqual(failed.state, "planned")
         self.assertIsNone(failed.uid)
         self.assertEqual(failed.failure_count, 1)
+        self.assertEqual(failed.role, "spare")
         replay = replaced.state.replace_failed(
             1,
             reason="VNC preflight failed",
@@ -275,7 +337,7 @@ class SeatPoolTests(unittest.TestCase):
         self.assertTrue(replay.replayed)
         self.assertEqual(replay.value, due.value)
 
-    def test_teacher_approved_grow_only_appends_slots(self):
+    def test_grow_only_appends_slots(self):
         pool = self.verified(self.make_pool(1, 1), 1, "main")
         pool = pool.reserve(
             17,
@@ -285,18 +347,9 @@ class SeatPoolTests(unittest.TestCase):
             expected_revision=pool.revision,
         ).state
         before = pool.seats
-        with self.assertRaises(TeacherApprovalRequiredError):
-            pool.grow(
-                additional_main=1,
-                additional_spares=1,
-                teacher_approved=False,
-                command_id="grow-no",
-                expected_revision=pool.revision,
-            )
         grown = pool.grow(
             additional_main=2,
             additional_spares=1,
-            teacher_approved=True,
             command_id="grow-yes",
             expected_revision=pool.revision,
         )
@@ -317,7 +370,6 @@ class ReservationRuleTests(unittest.TestCase):
             reservation_state(
                 now_ms=RELEASE - 1,
                 release_at_ms=RELEASE,
-                begin_at_ms=BEGIN,
             ),
             "reserved",
         )
@@ -325,16 +377,16 @@ class ReservationRuleTests(unittest.TestCase):
             reservation_state(
                 now_ms=RELEASE,
                 release_at_ms=RELEASE,
-                begin_at_ms=BEGIN,
             ),
             "released",
         )
-        with self.assertRaises(TeacherApprovalRequiredError):
-            reservation_state(
-                now_ms=BEGIN,
-                release_at_ms=RELEASE,
-                begin_at_ms=BEGIN,
-            )
+
+    def test_automatic_capacity_uses_minimum_and_ten_percent(self):
+        self.assertEqual(desired_capacity(0), (0, 2))
+        self.assertEqual(desired_capacity(1), (1, 2))
+        self.assertEqual(desired_capacity(20), (20, 2))
+        self.assertEqual(desired_capacity(21), (21, 3))
+        self.assertEqual(desired_capacity(100), (100, 10))
 
 
 if __name__ == "__main__":

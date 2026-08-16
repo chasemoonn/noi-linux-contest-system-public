@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 image qualification host fact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "phase", "session_id", "observed_at", "host", "source", "bundle", "state"],
+  "properties": {
+    "$schema": {"const": "v1-image-host-fact.schema.json"},
+    "schema_version": {"const": 1},
+    "phase": {"enum": ["export", "imported", "promoted", "rolled_back", "repromoted", "restored"]},
+    "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["anonymous_id", "architecture", "docker_server", "kernel"],
+      "properties": {
+        "anonymous_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "architecture": {"type": "string", "minLength": 1, "maxLength": 200},
+        "docker_server": {"type": "string", "minLength": 1, "maxLength": 200},
+        "kernel": {"type": "string", "minLength": 1, "maxLength": 200}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "tree"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+      }
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["archive_sha256", "bundle_checksums_sha256", "bundle_manifest_sha256", "contract", "image_id", "image_tag", "iso_sha256", "release_manifest_sha256", "source_revision"],
+      "properties": {
+        "archive_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "bundle_checksums_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "bundle_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "contract": {"const": "finalizer-status-v1"},
+        "image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "image_tag": {"type": "string", "minLength": 1},
+        "iso_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "release_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_tag_image_id", "current_promoted_image_id", "current_rollback_image_id", "current_rollback_source_target", "current_source_revision", "current_source_target", "formal_image_id", "pending_transaction", "running_contest_seats"],
+      "properties": {
+        "candidate_tag_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "current_promoted_image_id": {"type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$"},
+        "current_rollback_image_id": {"type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$"},
+        "current_rollback_source_target": {"type": ["string", "null"]},
+        "current_source_revision": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40}$"},
+        "current_source_target": {"type": ["string", "null"]},
+        "formal_image_id": {"type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$"},
+        "pending_transaction": {"const": false},
+        "running_contest_seats": {"const": 0}
+      }
+    }
+  }
+}

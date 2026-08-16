@@ -79,9 +79,33 @@ class Remote:
         client = self._client()
         try:
             _, stdout, stderr = client.exec_command(cmd, timeout=timeout)
-            out = stdout.read().decode("utf-8", errors="replace")
-            err = stderr.read().decode("utf-8", errors="replace")
-            code = stdout.channel.recv_exit_status()
+            channel = stdout.channel
+            deadline = time.monotonic() + timeout
+            out_chunks: list[bytes] = []
+            err_chunks: list[bytes] = []
+            while True:
+                progressed = False
+                while channel.recv_ready():
+                    out_chunks.append(channel.recv(32768))
+                    progressed = True
+                while channel.recv_stderr_ready():
+                    err_chunks.append(channel.recv_stderr(32768))
+                    progressed = True
+                if (
+                    channel.exit_status_ready()
+                    and not channel.recv_ready()
+                    and not channel.recv_stderr_ready()
+                ):
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    channel.close()
+                    raise TimeoutError("远程命令等待超时")
+                if not progressed:
+                    time.sleep(min(0.01, remaining))
+            code = channel.recv_exit_status()
+            out = b"".join(out_chunks).decode("utf-8", errors="replace")
+            err = b"".join(err_chunks).decode("utf-8", errors="replace")
             if code != 0:
                 raise RuntimeError(f"远程命令失败({code}): {cmd}\n{err}")
             return out

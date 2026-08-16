@@ -17,6 +17,10 @@ from urllib.parse import urlsplit
 
 COOKIE_NAME = "noi_cookie_probe"
 COOKIE_VALUE = "first_party_ok"
+# The release gate also runs under deterministic software-emulated Linux
+# hosts.  Firefox 79 can need close to a minute for its first cold headless
+# startup there even though the same cookie flow completes normally.
+EVENT_TIMEOUT_SECONDS = 120
 
 
 class ProbeState:
@@ -97,7 +101,7 @@ class ProbeHandler(BaseHTTPRequestHandler):
 
 
 def wait_for(event: threading.Event, process: subprocess.Popen, label: str) -> None:
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + EVENT_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if event.wait(0.1):
             return

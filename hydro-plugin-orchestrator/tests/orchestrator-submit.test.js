@@ -17,6 +17,10 @@ process.env.ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE = path.join(
     tempDir,
     'problem-drafts.json',
 );
+process.env.ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE = path.join(
+    tempDir,
+    'materials.json',
+);
 
 const calls = {
     recordAdds: 0,
@@ -38,6 +42,9 @@ let contestOverrides = {};
 let contestStatusOverrides = {};
 let contestStatusPresent = true;
 let recordAddBarrier = null;
+let recordAddFailure = null;
+let recordAddFailureCommits = false;
+let recordDocuments = [];
 
 function deferred() {
     let resolve;
@@ -120,21 +127,53 @@ const hydroMock = {
     },
     ProblemNotFoundError,
     RecordModel: {
-        add: async () => {
+        add: async (domainId, pid, uid, lang, code, _addTask, args) => {
             calls.recordAdds += 1;
             const rid = new MockObjectId(String(calls.recordAdds).padStart(24, '0'));
             if (recordAddBarrier) {
                 recordAddBarrier.started.resolve();
                 await recordAddBarrier.release.promise;
             }
+            const record = {
+                _id: rid,
+                code,
+                contest: args.contest,
+                domainId,
+                files: args.files,
+                judgeAt: new Date(),
+                lang,
+                pid,
+                uid,
+            };
+            if (!recordAddFailure || recordAddFailureCommits) recordDocuments.push(record);
+            if (recordAddFailure) throw recordAddFailure;
             return rid;
+        },
+        coll: {
+            find: (filter) => ({
+                project: () => ({
+                    limit: (limit) => ({
+                        toArray: async () => recordDocuments.filter((record) => (
+                            String(record.domainId) === String(filter.domainId)
+                            && String(record.contest) === String(filter.contest)
+                            && Number(record.pid) === Number(filter.pid)
+                            && Number(record.uid) === Number(filter.uid)
+                            && String(record.lang) === String(filter.lang)
+                            && record.files?.orchestratorSubmissionId
+                                === filter['files.orchestratorSubmissionId']
+                            && record.files?.orchestratorPayloadSha256
+                                === filter['files.orchestratorPayloadSha256']
+                        )).slice(0, limit),
+                    }),
+                }),
+            }),
         },
     },
     SettingModel: { langs: { cc: { disabled: false } } },
     UserFacingError,
 };
 
-let routeHandler;
+const routeHandlers = new Map();
 const originalLoad = Module._load;
 
 before(() => {
@@ -144,8 +183,8 @@ before(() => {
     };
     const plugin = require('../index.js');
     plugin.apply({
-        Route(_name, _route, handler) {
-            routeHandler = handler;
+        Route(_name, route, handler) {
+            routeHandlers.set(route, handler);
         },
     });
 });
@@ -166,7 +205,7 @@ function defaultFingerprint() {
 }
 
 async function submit(overrides = {}) {
-    const handler = new routeHandler();
+    const handler = new (routeHandlers.get('/orchestrator/submit'))();
     handler.request = {
         headers: { 'x-orchestrator-token': process.env.ORCHESTRATOR_TOKEN },
         body: {
@@ -184,9 +223,31 @@ async function submit(overrides = {}) {
     return handler.response.body;
 }
 
+async function resolveSubmission(submission_id) {
+    const handler = new (routeHandlers.get('/orchestrator/submit/status'))();
+    handler.request = {
+        headers: { 'x-orchestrator-token': process.env.ORCHESTRATOR_TOKEN },
+        body: { submission_id },
+    };
+    handler.response = {};
+    await handler.post();
+    return handler.response.body;
+}
+
 test('rejects a missing token', async () => {
-    const handler = new routeHandler();
+    const handler = new (routeHandlers.get('/orchestrator/submit'))();
     handler.request = { headers: {}, body: {} };
+    handler.response = {};
+    await assert.rejects(handler.post(), (error) => {
+        assert.ok(error instanceof InvalidTokenError);
+        assert.equal(error.code, 403);
+        return true;
+    });
+});
+
+test('read-only status also requires the shared internal token', async () => {
+    const handler = new (routeHandlers.get('/orchestrator/submit/status'))();
+    handler.request = { headers: {}, body: { submission_id: submissionId('status') } };
     handler.response = {};
     await assert.rejects(handler.post(), (error) => {
         assert.ok(error instanceof InvalidTokenError);
@@ -236,6 +297,14 @@ test('persists one record and returns its rid', async () => {
     assert.equal(persisted.contestDocId, '0'.repeat(24));
     assert.equal(persisted.problemDocId, 101);
     assert.equal(persisted.uid, 7);
+    assert.equal(
+        recordDocuments[0].files.orchestratorSubmissionId,
+        submissionId('default'),
+    );
+    assert.equal(
+        recordDocuments[0].files.orchestratorPayloadSha256,
+        defaultFingerprint(),
+    );
     if (process.platform !== 'win32') {
         assert.equal(
             fs.statSync(process.env.ORCHESTRATOR_IDEMPOTENCY_FILE).mode & 0o777,
@@ -265,8 +334,8 @@ test('returns the persisted rid after a plugin restart', async () => {
     delete require.cache[require.resolve('../index.js')];
     const restarted = require('../index.js');
     restarted.apply({
-        Route(_name, _route, handler) {
-            routeHandler = handler;
+        Route(_name, route, handler) {
+            routeHandlers.set(route, handler);
         },
     });
 
@@ -302,8 +371,8 @@ test('restart resumes an incomplete legacy journal without re-adding the record'
     delete require.cache[require.resolve('../index.js')];
     const restarted = require('../index.js');
     restarted.apply({
-        Route(_name, _route, handler) {
-            routeHandler = handler;
+        Route(_name, route, handler) {
+            routeHandlers.set(route, handler);
         },
     });
 
@@ -439,6 +508,160 @@ test('coalesces concurrent identical submissions', async () => {
         submit({ submission_id: id }),
     ]);
     assert.equal(left.rid, right.rid);
+    assert.equal(calls.recordAdds, before + 1);
+});
+
+test('an ambiguous RecordModel.add failure is durably blocked from replay', async () => {
+    const id = submissionId('ambiguous-add');
+    const before = calls.recordAdds;
+    recordAddFailure = new Error('insert may have committed before task failure');
+    try {
+        await assert.rejects(
+            submit({ submission_id: id }),
+            /insert may have committed/,
+        );
+    } finally {
+        recordAddFailure = null;
+    }
+    assert.equal(calls.recordAdds, before + 1);
+    const reserved = JSON.parse(
+        fs.readFileSync(process.env.ORCHESTRATOR_IDEMPOTENCY_FILE, 'utf8'),
+    ).entries[id];
+    assert.equal(reserved.phase, 'reserved');
+    assert.equal(reserved.rid, '');
+
+    delete require.cache[require.resolve('../index.js')];
+    const restarted = require('../index.js');
+    restarted.apply({
+        Route(_name, route, handler) {
+            routeHandlers.set(route, handler);
+        },
+    });
+    await assert.rejects(
+        submit({ submission_id: id }),
+        (error) => {
+            assert.equal(error.name, 'OrchestratorSubmissionAmbiguousError');
+            assert.equal(error.code, 409);
+            return true;
+        },
+    );
+    assert.equal(calls.recordAdds, before + 1);
+    assert.deepEqual(await resolveSubmission(id), { status: 'missing' });
+});
+
+test('read-only status refuses heuristic recovery for a legacy journal', async () => {
+    const id = submissionId('legacy-ambiguous-journal');
+    const state = JSON.parse(
+        fs.readFileSync(process.env.ORCHESTRATOR_IDEMPOTENCY_FILE, 'utf8'),
+    );
+    state.entries[id] = {
+        fingerprint: defaultFingerprint(),
+        rid: '',
+        contestDocId: '0'.repeat(24),
+        problemDocId: 101,
+        uid: 7,
+        complete: false,
+        phase: 'reserved',
+        createdAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(
+        process.env.ORCHESTRATOR_IDEMPOTENCY_FILE,
+        `${JSON.stringify(state)}\n`,
+        'utf8',
+    );
+    delete require.cache[require.resolve('../index.js')];
+    const restarted = require('../index.js');
+    restarted.apply({
+        Route(_name, route, handler) {
+            routeHandlers.set(route, handler);
+        },
+    });
+
+    assert.deepEqual(await resolveSubmission(id), { status: 'unsupported' });
+});
+
+test('read-only status resolves one committed record after response loss and plugin restart', async () => {
+    const id = submissionId('ambiguous-committed-add');
+    const before = { ...calls };
+    recordAddFailure = new Error('response lost after a committed record');
+    recordAddFailureCommits = true;
+    try {
+        await assert.rejects(
+            submit({ submission_id: id }),
+            /response lost after a committed record/,
+        );
+    } finally {
+        recordAddFailure = null;
+        recordAddFailureCommits = false;
+    }
+
+    delete require.cache[require.resolve('../index.js')];
+    const restarted = require('../index.js');
+    restarted.apply({
+        Route(_name, route, handler) {
+            routeHandlers.set(route, handler);
+        },
+    });
+    const [resolved, concurrent] = await Promise.all([
+        resolveSubmission(id),
+        resolveSubmission(id),
+    ]);
+    assert.equal(resolved.status, 'resolved');
+    assert.match(resolved.rid, /^[0-9a-f]{24}$/);
+    assert.deepEqual(concurrent, resolved);
+    assert.equal(calls.recordAdds, before.recordAdds + 1);
+    assert.equal(calls.statusUpdates, before.statusUpdates + 1);
+    assert.equal(calls.problemCounts, before.problemCounts + 1);
+    assert.equal(calls.userCounts, before.userCounts + 1);
+
+    const repeated = await resolveSubmission(id);
+    assert.deepEqual(repeated, resolved);
+    assert.equal(calls.recordAdds, before.recordAdds + 1);
+
+    recordDocuments.push({
+        ...recordDocuments.at(-1),
+        _id: new MockObjectId('f'.repeat(24)),
+    });
+    assert.deepEqual(await resolveSubmission(id), { status: 'multiple' });
+    recordDocuments.pop();
+});
+
+test('read-only status never guesses when the exact record is missing', async () => {
+    const id = submissionId('ambiguous-missing-add');
+    const before = calls.recordAdds;
+    recordAddFailure = new Error('record was not inserted');
+    try {
+        await assert.rejects(submit({ submission_id: id }), /was not inserted/);
+    } finally {
+        recordAddFailure = null;
+    }
+
+    assert.deepEqual(await resolveSubmission(id), { status: 'missing' });
+    assert.equal(calls.recordAdds, before + 1);
+    await assert.rejects(
+        submit({ submission_id: id }),
+        (error) => error.name === 'OrchestratorSubmissionAmbiguousError',
+    );
+    assert.equal(calls.recordAdds, before + 1);
+});
+
+test('read-only status requires a finished judge task and an exact payload', async () => {
+    const id = submissionId('ambiguous-unfinished-add');
+    const before = calls.recordAdds;
+    recordAddFailure = new Error('judge task failed');
+    recordAddFailureCommits = true;
+    try {
+        await assert.rejects(submit({ submission_id: id }), /judge task failed/);
+    } finally {
+        recordAddFailure = null;
+        recordAddFailureCommits = false;
+    }
+    const candidate = recordDocuments.at(-1);
+    candidate.judgeAt = null;
+    assert.deepEqual(await resolveSubmission(id), { status: 'pending' });
+    candidate.judgeAt = new Date();
+    candidate.code = 'different payload';
+    assert.deepEqual(await resolveSubmission(id), { status: 'pending' });
     assert.equal(calls.recordAdds, before + 1);
 });
 

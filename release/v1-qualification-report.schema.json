@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 production qualification report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "source_revision",
+    "profile",
+    "components",
+    "evidence",
+    "reviewers",
+    "production_qualified"
+  ],
+  "properties": {
+    "$schema": {"const": "v1-qualification-report.schema.json"},
+    "schema_version": {"const": 2},
+    "source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "profile": {"const": "aliyun-hydro5-pm2-direct-v1"},
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orchestrator_image_digest", "desktop_image_id", "desktop_source_revision", "hydro_plugin_sha256"],
+      "properties": {
+        "orchestrator_image_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "desktop_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "desktop_source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "hydro_plugin_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["linux_ci", "cross_machine_import_rollback", "independent_teacher_install", "single_seat", "fault_recovery", "ordinary_oj_isolation", "capacity_15_plus_2"],
+      "properties": {
+        "linux_ci": {"$ref": "#/$defs/basicEvidence"},
+        "cross_machine_import_rollback": {"$ref": "#/$defs/basicEvidence"},
+        "independent_teacher_install": {"$ref": "#/$defs/basicEvidence"},
+        "single_seat": {"$ref": "#/$defs/singleSeatEvidence"},
+        "fault_recovery": {"$ref": "#/$defs/faultEvidence"},
+        "ordinary_oj_isolation": {"$ref": "#/$defs/isolationEvidence"},
+        "capacity_15_plus_2": {"$ref": "#/$defs/capacityEvidence"}
+      }
+    },
+    "reviewers": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "production_qualified": {"type": "boolean"}
+  },
+  "$defs": {
+    "basicEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reference", "evidence_sha256"],
+      "properties": {
+        "status": {"enum": ["passed", "pending", "failed"]},
+        "reference": {"type": ["string", "null"]},
+        "evidence_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "singleSeatEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reference", "evidence_sha256", "checks"],
+      "properties": {
+        "status": {"enum": ["passed", "pending", "failed"]},
+        "reference": {"type": ["string", "null"]},
+        "evidence_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+        "checks": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["materials", "desktop", "compile", "manual_submit", "cutoff_submit", "oj_record", "collection", "shutdown", "test_cleanup"],
+          "properties": {
+            "materials": {"type": "boolean"},
+            "desktop": {"type": "boolean"},
+            "compile": {"type": "boolean"},
+            "manual_submit": {"type": "boolean"},
+            "cutoff_submit": {"type": "boolean"},
+            "oj_record": {"type": "boolean"},
+            "collection": {"type": "boolean"},
+            "shutdown": {"type": "boolean"},
+            "test_cleanup": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "faultEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reference", "evidence_sha256", "scenarios"],
+      "properties": {
+        "status": {"enum": ["passed", "pending", "failed"]},
+        "reference": {"type": ["string", "null"]},
+        "evidence_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+        "scenarios": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["control_restart", "desktop_reconnect", "single_seat_replace", "network_interruption", "collection_retry", "power_loss_recovery"],
+          "properties": {
+            "control_restart": {"type": "boolean"},
+            "desktop_reconnect": {"type": "boolean"},
+            "single_seat_replace": {"type": "boolean"},
+            "network_interruption": {"type": "boolean"},
+            "collection_retry": {"type": "boolean"},
+            "power_loss_recovery": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "isolationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reference", "evidence_sha256", "ordinary_oj_errors", "ordinary_oj_restarts", "ordinary_oj_pid_changes"],
+      "properties": {
+        "status": {"enum": ["passed", "pending", "failed"]},
+        "reference": {"type": ["string", "null"]},
+        "evidence_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+        "ordinary_oj_errors": {"type": ["integer", "null"], "minimum": 0},
+        "ordinary_oj_restarts": {"type": ["integer", "null"], "minimum": 0},
+        "ordinary_oj_pid_changes": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "capacityEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reference", "evidence_sha256", "formal_seats", "spare_seats", "duration_seconds", "unexpected_seat_restarts", "failed_submissions", "failed_collections", "verified_seats", "spare_takeovers", "planned_restart_recoveries", "controller_network_recoveries", "capacity_margin_accepted"],
+      "properties": {
+        "status": {"enum": ["passed", "pending", "failed"]},
+        "reference": {"type": ["string", "null"]},
+        "evidence_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+        "formal_seats": {"type": ["integer", "null"], "minimum": 0},
+        "spare_seats": {"type": ["integer", "null"], "minimum": 0},
+        "duration_seconds": {"type": ["integer", "null"], "minimum": 0},
+        "unexpected_seat_restarts": {"type": ["integer", "null"], "minimum": 0},
+        "failed_submissions": {"type": ["integer", "null"], "minimum": 0},
+        "failed_collections": {"type": ["integer", "null"], "minimum": 0},
+        "verified_seats": {"type": ["integer", "null"], "minimum": 0},
+        "spare_takeovers": {"type": ["integer", "null"], "minimum": 0},
+        "planned_restart_recoveries": {"type": ["integer", "null"], "minimum": 0},
+        "controller_network_recoveries": {"type": ["integer", "null"], "minimum": 0},
+        "capacity_margin_accepted": {"type": ["boolean", "null"]}
+      }
+    }
+  }
+}

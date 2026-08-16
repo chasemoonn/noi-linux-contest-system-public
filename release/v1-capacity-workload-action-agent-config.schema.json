@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 capacity workload action agent configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "qualification_marker", "contest_id", "seat_set_sha256",
+    "problem_slugs", "seats", "docker_path", "docker_socket", "browser_envelope", "browser_signer",
+    "browser_public_key", "browser_max_age_seconds", "signer", "signing_public_key",
+    "signing_key_path", "ssh_keygen_path", "lock_path", "receipt_path", "output_path"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "contest_id": {"type": "string", "pattern": "^[a-f0-9]{24}$"},
+    "seat_set_sha256": {"$ref": "#/$defs/hex64"},
+    "problem_slugs": {
+      "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"}
+    },
+    "seats": {
+      "type": "array", "minItems": 15, "maxItems": 15,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["slot_no", "candidate", "container_id", "container_name", "image_id", "pid", "started_at", "restart_count"],
+        "properties": {
+          "slot_no": {"type": "integer", "minimum": 1, "maximum": 15},
+          "candidate": {"type": "string", "pattern": "^[0-9]{12}$"},
+          "container_id": {"$ref": "#/$defs/hex64"},
+          "container_name": {"type": "string", "pattern": "^seat-[a-f0-9]{8}-slot-[0-9]{3}$"},
+          "image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+          "pid": {"type": "integer", "minimum": 1},
+          "started_at": {"type": "string", "format": "date-time"},
+          "restart_count": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "docker_path": {"$ref": "#/$defs/path"},
+    "docker_socket": {"const": "/var/run/docker.sock"},
+    "browser_envelope": {"$ref": "#/$defs/path"},
+    "browser_signer": {"$ref": "#/$defs/signer"},
+    "browser_public_key": {"$ref": "#/$defs/public_key"},
+    "browser_max_age_seconds": {"type": "integer", "minimum": 5, "maximum": 120},
+    "signer": {"$ref": "#/$defs/signer"},
+    "signing_public_key": {"$ref": "#/$defs/public_key"},
+    "signing_key_path": {"$ref": "#/$defs/path"},
+    "ssh_keygen_path": {"$ref": "#/$defs/path"},
+    "lock_path": {"$ref": "#/$defs/path"},
+    "receipt_path": {"$ref": "#/$defs/path"},
+    "output_path": {"$ref": "#/$defs/path"}
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "path": {"type": "string", "pattern": "^/([^/]+/)*[^/]+$"},
+    "signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
+    "public_key": {"type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]{40,160}( [^\\r\\n]{1,120})?$"}
+  }
+}

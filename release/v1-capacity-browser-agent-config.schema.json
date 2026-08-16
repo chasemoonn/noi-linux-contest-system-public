@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 independent capacity browser agent configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "transport_profile", "qualification_marker", "seat_set_sha256", "seat_urls", "rtt_url", "websocket_url_pattern", "canvas_selector", "sample_keys", "rtt_attempts", "sample_interval_seconds", "navigation_timeout_ms", "frame_timeout_ms", "headless", "signer", "signing_key_path", "ssh_keygen_path", "state_path", "output_path"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "transport_profile": {"enum": ["direct_http", "compat_https"]},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "seat_set_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "seat_urls": {"type": "array", "minItems": 15, "maxItems": 15, "uniqueItems": true, "items": {"type": "string", "pattern": "^https?://"}},
+    "rtt_url": {"type": "string", "pattern": "^https?://"},
+    "websocket_url_pattern": {"type": "string", "minLength": 1, "maxLength": 512},
+    "canvas_selector": {"const": "#noVNC_container canvas"},
+    "sample_keys": {"type": "array", "minItems": 5, "maxItems": 30, "items": {"type": "string", "pattern": "^(Arrow(Left|Right|Up|Down)|[a-z0-9])$"}},
+    "rtt_attempts": {"type": "integer", "minimum": 5, "maximum": 100},
+    "sample_interval_seconds": {"type": "integer", "minimum": 8, "maximum": 60},
+    "navigation_timeout_ms": {"type": "integer", "minimum": 5000, "maximum": 60000},
+    "frame_timeout_ms": {"type": "integer", "minimum": 250, "maximum": 5000},
+    "headless": {"type": "boolean"},
+    "signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
+    "signing_key_path": {"type": "string", "pattern": "^/"},
+    "ssh_keygen_path": {"type": "string", "pattern": "^/"},
+    "state_path": {"type": "string", "pattern": "^/"},
+    "output_path": {"type": "string", "pattern": "^/"}
+  }
+}

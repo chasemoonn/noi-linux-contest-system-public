@@ -744,6 +744,7 @@ class AliyunTests(unittest.TestCase):
         status = ecs.desktop_access_status()
 
         self.assertEqual(status["conflict_count"], 1)
+        self.assertIn(status["instance_state"], {"RUNNING", "STOPPED"})
         self.assertFalse(status["closed"])
         self.assertEqual(
             api.describe_security_group_attribute.call_args_list[1].args[0].next_token,

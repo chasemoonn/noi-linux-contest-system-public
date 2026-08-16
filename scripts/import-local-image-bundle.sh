@@ -56,6 +56,10 @@ done
 [[ -n "${bundle_dir}" ]] || die '--bundle-dir is required'
 [[ -n "${release_manifest}" ]] || die '--release-manifest is required'
 bundle_dir="${bundle_dir%/}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+archive_identity_verifier="${script_dir}/verify_docker_archive_identity.py"
+[[ -f "${archive_identity_verifier}" ]] \
+    || die "trusted archive identity verifier not found: ${archive_identity_verifier}"
 
 for command_name in docker python3 tar sha256sum stat mktemp awk grep sed rm; do
     need_cmd "${command_name}"
@@ -600,53 +604,30 @@ actual_sha256="$(sha256sum -- "${archive_path}" | awk '{print $1}')"
 [[ "${actual_sha256}" == "${expected_sha256}" ]] \
     || die "archive SHA256 mismatch: expected ${expected_sha256}, got ${actual_sha256}"
 
-save_manifest="${tmp_dir}/docker-save-manifest.json"
-if [[ "${compression}" == 'zstd' ]]; then
-    zstd -dc -- "${archive_path}" | tar -xOf - manifest.json >"${save_manifest}"
-else
-    tar -xOf "${archive_path}" manifest.json >"${save_manifest}"
-fi
-archive_config_path="$({
-    python3 - "${save_manifest}" "${image_tag}" "${expected_id}" <<'PY'
-import json
-import sys
-
-manifest_path, expected_tag, expected_id = sys.argv[1:]
-with open(manifest_path, "r", encoding="utf-8") as handle:
-    document = json.load(handle)
-if not isinstance(document, list) or len(document) != 1:
-    raise SystemExit("Docker archive must contain exactly one image record")
-record = document[0]
-if record.get("RepoTags") != [expected_tag]:
-    raise SystemExit("Docker archive tag does not match the bundle manifest")
-config_digest = expected_id[len("sha256:"):]
-config_path = record.get("Config", "")
-valid_config_paths = {
-    config_digest,
-    config_digest + ".json",
-    "blobs/sha256/" + config_digest,
-}
-if config_path not in valid_config_paths:
-    raise SystemExit("Docker archive config digest does not match the bundle image ID")
-print(config_path)
-PY
-} 2>&1)" || die "invalid Docker archive: ${archive_config_path}"
-
 archive_config_file="${tmp_dir}/docker-image-config.json"
 if [[ "${compression}" == 'zstd' ]]; then
-    zstd -dc -- "${archive_path}" \
-        | tar -xOf - -- "${archive_config_path}" \
-        >"${archive_config_file}"
+    archive_identity="$({
+        zstd -dc -- "${archive_path}" \
+            | python3 "${archive_identity_verifier}" \
+                --archive - \
+                --expected-tag "${image_tag}" \
+                --expected-image-id "${expected_id}" \
+                --config-output "${archive_config_file}"
+    } 2>&1)" || die "invalid Docker archive: ${archive_identity}"
 else
-    tar -xOf "${archive_path}" -- "${archive_config_path}" \
-        >"${archive_config_file}"
+    archive_identity="$({
+        python3 "${archive_identity_verifier}" \
+            --archive "${archive_path}" \
+            --expected-tag "${image_tag}" \
+            --expected-image-id "${expected_id}" \
+            --config-output "${archive_config_file}"
+    } 2>&1)" || die "invalid Docker archive: ${archive_identity}"
 fi
+printf '%s\n' "${archive_identity}"
+
 config_size="$(stat -c '%s' -- "${archive_config_file}")"
 ((config_size > 0 && config_size <= 4194304)) \
     || die 'Docker archive config must be between 1 byte and 4 MiB'
-config_sha256="$(sha256sum -- "${archive_config_file}" | awk '{print $1}')"
-[[ "${config_sha256}" == "${expected_id#sha256:}" ]] \
-    || die 'Docker archive config content SHA256 does not match the bundle image ID'
 
 # Authenticate the archive's actual labels before the first Docker daemon call;
 # checking only the bundle manifest would allow it to describe different bytes.

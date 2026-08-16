@@ -17,6 +17,10 @@ process.env.ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE = path.join(
     tempDir,
     'problem-drafts.json',
 );
+process.env.ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE = path.join(
+    tempDir,
+    'materials.json',
+);
 process.env.ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS = 'exam.example.test, exam-backup.example.test';
 
 class UserFacingError extends Error {

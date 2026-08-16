@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 frozen 15+2 seat inventory probe config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tid", "docker_socket", "desktop_image_id", "network_name", "network_id", "formal_container_ids", "spare_container_ids", "baselines", "planned_restart", "fault_replacement"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "tid": {"type": "string", "pattern": "^[a-f0-9]{24}$"},
+    "docker_socket": {"const": "/var/run/docker.sock"},
+    "desktop_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "network_name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "network_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "formal_container_ids": {"$ref": "#/$defs/formal"},
+    "spare_container_ids": {"$ref": "#/$defs/spare"},
+    "planned_restart": {
+      "type": "object", "additionalProperties": false,
+      "required": ["container_id", "restart_count_delta"],
+      "properties": {
+        "container_id": {"$ref": "#/$defs/hex64"},
+        "restart_count_delta": {"const": 1}
+      }
+    },
+    "fault_replacement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["baseline_container_id", "slot_no", "replacement_spare_container_id", "replacement_slot_no"],
+      "properties": {
+        "baseline_container_id": {"$ref": "#/$defs/hex64"},
+        "slot_no": {"type": "integer", "minimum": 1, "maximum": 15},
+        "replacement_spare_container_id": {"$ref": "#/$defs/hex64"},
+        "replacement_slot_no": {"type": "integer", "minimum": 16, "maximum": 17}
+      }
+    },
+    "baselines": {
+      "type": "array", "minItems": 17, "maxItems": 17,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["container_id", "slot_no", "pid", "restart_count", "started_at"],
+        "properties": {
+          "container_id": {"$ref": "#/$defs/hex64"},
+          "slot_no": {"type": "integer", "minimum": 1, "maximum": 17},
+          "pid": {"type": "integer", "minimum": 1},
+          "restart_count": {"type": "integer", "minimum": 0},
+          "started_at": {"type": "string", "format": "date-time"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "formal": {"type": "array", "minItems": 15, "maxItems": 15, "uniqueItems": true, "items": {"$ref": "#/$defs/hex64"}},
+    "spare": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/hex64"}}
+  }
+}

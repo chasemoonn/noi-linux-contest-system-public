@@ -201,6 +201,19 @@ def validate_config(cfg: dict) -> None:
     gateway_scheme = str(server.get("gateway_scheme", "http")).lower()
     if gateway_scheme not in {"http", "https"}:
         raise ValueError("contest_server.gateway_scheme 只支持 http 或 https")
+    gateway_bind_raw = str(
+        server.get("gateway_bind_address", "0.0.0.0")
+    ).strip()
+    try:
+        gateway_bind = ipaddress.ip_address(gateway_bind_raw)
+    except ValueError as exc:
+        raise ValueError(
+            "contest_server.gateway_bind_address 必须是 IPv4 地址"
+        ) from exc
+    if gateway_bind.version != 4 or gateway_bind.is_loopback or gateway_bind.is_multicast:
+        raise ValueError(
+            "contest_server.gateway_bind_address 必须是非回环 IPv4 地址"
+        )
     if desktop_access_enabled:
         if int(server.get("gateway_listen", 80)) != direct_port:
             raise ValueError(
@@ -244,8 +257,32 @@ def validate_config(cfg: dict) -> None:
     for key in ("public_base_url", "internal_base_url", "mongo_uri", "domain_id"):
         if not hydro.get(key):
             raise ValueError(f"配置为空: hydro.{key}")
-    if hydro.get("submit_enabled") and len(str(hydro.get("orchestrator_token", ""))) < 32:
+    # V1 always publishes the approved PDF and practice data into the OJ.
+    # The private addon token is therefore a platform prerequisite, not only
+    # a web-submit/notification option.
+    if len(str(hydro.get("orchestrator_token", ""))) < 32:
         raise ValueError("hydro.orchestrator_token 至少 32 个字符")
+    qualification_failure_path = str(
+        hydro.get("qualification_failure_marker_path") or ""
+    )
+    qualification_marker = str(hydro.get("qualification_marker") or "")
+    if qualification_failure_path:
+        # Runtime configuration is for the Linux container even when this
+        # validator is exercised by the Windows development test suite.
+        if not re.fullmatch(
+            r"/app/data/qualification/[A-Za-z0-9_.-]{1,128}[.]json",
+            qualification_failure_path,
+        ):
+            raise ValueError(
+                "hydro.qualification_failure_marker_path 必须位于 "
+                "/app/data/qualification 且为固定 JSON 文件"
+            )
+        if not re.fullmatch(
+            r"NOI-V1-QUAL-[A-Z0-9]{16,64}", qualification_marker
+        ):
+            raise ValueError("资格故障注入必须配置固定 qualification_marker")
+    elif qualification_marker:
+        raise ValueError("生产配置不得单独启用 qualification_marker")
     notify_hosts: list[str] = []
     if hydro.get("notify_enabled", False):
         if len(str(hydro.get("orchestrator_token", ""))) < 32:
@@ -291,7 +328,9 @@ def validate_config(cfg: dict) -> None:
     deployment_lock = str(admin.get("deployment_lock", "")).strip()
     if deployment_lock and not deployment_lock.startswith("/"):
         raise ValueError("orchestrator.deployment_lock 必须是绝对路径")
-    _require(cfg, "orchestrator", "collected_dir")
+    collected_dir = str(_require(cfg, "orchestrator", "collected_dir"))
+    if not collected_dir.startswith("/"):
+        raise ValueError("orchestrator.collected_dir 必须是绝对路径")
     materials_dir = str(admin.get("materials_dir", "/app/data/materials"))
     if not materials_dir.startswith("/"):
         raise ValueError("orchestrator.materials_dir 必须是绝对路径")
@@ -304,6 +343,17 @@ def validate_config(cfg: dict) -> None:
     if testdata_maximum < 1024 or testdata_maximum > 512 * 1024 * 1024:
         raise ValueError(
             "orchestrator.testdata_max_bytes 必须在 1 KiB 到 512 MiB 之间"
+        )
+    material_publish_maximum = int(
+        admin.get("material_publish_max_bytes", 128 * 1024 * 1024)
+    )
+    if (
+        material_publish_maximum < paper_maximum + testdata_maximum
+        or material_publish_maximum > 512 * 1024 * 1024
+    ):
+        raise ValueError(
+            "orchestrator.material_publish_max_bytes 必须覆盖 PDF 与辅助数据上限之和，"
+            "且不超过 512 MiB"
         )
     expanded_maximum = int(
         admin.get("testdata_expanded_max_bytes", 256 * 1024 * 1024)
@@ -333,6 +383,7 @@ def validate_config(cfg: dict) -> None:
         ("default_spare_seats", 2, 0, 10),
         ("release_lead_minutes", 5, 1, 60),
         ("practice_groups_per_problem", 3, 2, 4),
+        ("shutdown_grace_minutes", 30, 1, 120),
     ):
         try:
             value = int(admin.get(key, default))
@@ -368,6 +419,19 @@ def validate_config(cfg: dict) -> None:
     artifact_root = str(admin.get("artifact_root", "/app/data/artifacts"))
     if not artifact_root.startswith("/"):
         raise ValueError("orchestrator.artifact_root 必须是绝对路径")
+    if len({artifact_root, materials_dir, collected_dir}) != 3:
+        raise ValueError("材料、工件和收卷目录必须彼此独立")
+    try:
+        workspace_retention = int(admin.get("workspace_retention_days", 30))
+        evidence_retention = int(admin.get("evidence_retention_days", 180))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("本地数据保留天数必须是整数") from exc
+    if not 1 <= workspace_retention <= 365:
+        raise ValueError("orchestrator.workspace_retention_days 必须在 1 到 365 之间")
+    if not workspace_retention <= evidence_retention <= 3650:
+        raise ValueError(
+            "orchestrator.evidence_retention_days 必须不短于工作区且不超过 3650 天"
+        )
 
     generation = cfg.get("artifact_generation") or {"enabled": False}
     if not isinstance(generation, dict):

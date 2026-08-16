@@ -316,6 +316,9 @@ class AliyunECS:
             if validate_topology
             else None
         )
+        instance_state = self._string_attr(instance, "status").upper() if instance is not None else "UNKNOWN"
+        if instance_state not in {"PENDING", "RUNNING", "STARTING", "STOPPING", "STOPPED"}:
+            instance_state = "UNKNOWN"
         rules = self._ingress(security_group_id)
         port = int(self.desktop_access.get("port", 80))
         source = str(self.desktop_access["source_cidr"])
@@ -407,6 +410,7 @@ class AliyunECS:
             "managed_rule_ids": managed_ids,
             "security_group_id": security_group_id,
             "eip": eip,
+            "instance_state": instance_state,
             "_managed": managed,
         }
 

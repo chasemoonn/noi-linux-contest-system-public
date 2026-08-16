@@ -129,15 +129,6 @@ def check_answer_tree(answer_root: str, candidate: str, files: list[str]) -> dic
         if expected.is_file():
             code = expected.read_text(encoding="utf-8-sig", errors="replace")
             issues = check_code(code, name)
-            extras = [
-                path.name
-                for path in problem_dir.iterdir()
-                if path.name != expected.name
-            ]
-            if extras:
-                issues.append(
-                    f"题目目录含额外文件或目录：{sorted(extras)}（正式规则只放源程序）"
-                )
             report[name] = {
                 "status": "ok" if not issues else "rule_violation",
                 "file": f"{candidate}/{name}/{name}.cpp",

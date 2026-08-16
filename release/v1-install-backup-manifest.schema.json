@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 durable service-install backup manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "plan_id", "source", "created_at", "artifacts"],
+  "properties": {
+    "$schema": {"const": "v1-install-backup-manifest.schema.json"},
+    "schema_version": {"const": 1},
+    "plan_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "manifest_sha256"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "artifacts": {"type": "object"}
+  }
+}

@@ -12,6 +12,7 @@ process.env.ORCHESTRATOR_TOKEN = 'test-token-that-is-at-least-thirty-two-charact
 process.env.ORCHESTRATOR_IDEMPOTENCY_FILE = path.join(tempDir, 'submissions.json');
 process.env.ORCHESTRATOR_NOTIFICATION_IDEMPOTENCY_FILE = path.join(tempDir, 'notifications.json');
 process.env.ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE = path.join(tempDir, 'problem-drafts.json');
+process.env.ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE = path.join(tempDir, 'materials.json');
 
 class MockObjectId {
     constructor(value) {

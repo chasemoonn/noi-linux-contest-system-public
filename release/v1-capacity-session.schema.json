@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 capacity collection session",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "session_id", "created_at", "source", "components", "environment", "thresholds", "probes", "duration_seconds", "sample_interval_seconds"],
+  "properties": {
+    "$schema": {"const": "v1-capacity-session.schema.json"},
+    "schema_version": {"const": 1},
+    "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["revision", "tree"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+      }
+    },
+    "components": {
+      "type": "object", "additionalProperties": false,
+      "required": ["orchestrator_image_digest", "desktop_image_id", "desktop_source_revision", "hydro_plugin_sha256"],
+      "properties": {
+        "orchestrator_image_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "desktop_image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "desktop_source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "hydro_plugin_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profile", "instance_type", "region", "network_profile_sha256"],
+      "properties": {
+        "profile": {"const": "aliyun-hydro5-pm2-direct-v1"},
+        "instance_type": {"type": "string", "minLength": 1, "maxLength": 160},
+        "region": {"type": "string", "minLength": 1, "maxLength": 160},
+        "network_profile_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "thresholds": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_cpu_peak_percent_max", "host_memory_peak_percent_max", "container_memory_peak_bytes_max", "egress_peak_mbps_max", "rtt_p95_ms_max", "packet_loss_percent_max", "websocket_reconnects_max", "key_to_frame_p95_ms_max", "thresholds_sha256", "capacity_margin_accepted"],
+      "properties": {
+        "host_cpu_peak_percent_max": {"type": "number", "minimum": 0},
+        "host_memory_peak_percent_max": {"type": "number", "minimum": 0},
+        "container_memory_peak_bytes_max": {"type": "number", "minimum": 0},
+        "egress_peak_mbps_max": {"type": "number", "minimum": 0},
+        "rtt_p95_ms_max": {"type": "number", "minimum": 0},
+        "packet_loss_percent_max": {"type": "number", "minimum": 0},
+        "websocket_reconnects_max": {"type": "number", "minimum": 0},
+        "key_to_frame_p95_ms_max": {"type": "number", "minimum": 0},
+        "thresholds_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "capacity_margin_accepted": {"const": true}
+      }
+    },
+    "probes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["measurement", "seat_inventory", "workload_events", "fault_events", "ordinary_oj_observations", "shutdown_observation"],
+      "properties": {
+        "measurement": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "seat_inventory": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "workload_events": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "fault_events": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "ordinary_oj_observations": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "shutdown_observation": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "duration_seconds": {"type": "integer", "minimum": 3600},
+    "sample_interval_seconds": {"type": "integer", "minimum": 1, "maximum": 60}
+  }
+}

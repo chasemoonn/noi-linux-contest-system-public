@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 frozen capacity fault probe config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "qualification_marker", "database_path", "contest_id",
+    "expected_pool_revision", "failed_slot", "replacement_slot",
+    "seat_inventory_probe", "seat_inventory_probe_sha256",
+    "controller_probe_target_sha256", "network_action_envelope", "network_action_receipt", "network_action_agent_sha256",
+    "network_action_signer", "network_action_public_key",
+    "network_action_max_age_seconds", "ssh_keygen_path", "capacity_session_dir"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "database_path": {"$ref": "#/$defs/path"},
+    "contest_id": {"type": "string", "pattern": "^[a-f0-9]{24}$"},
+    "expected_pool_revision": {"type": "integer", "minimum": 1},
+    "failed_slot": {"type": "integer", "minimum": 1, "maximum": 15},
+    "replacement_slot": {"type": "integer", "minimum": 16, "maximum": 17},
+    "seat_inventory_probe": {"$ref": "#/$defs/path"},
+    "seat_inventory_probe_sha256": {"$ref": "#/$defs/hex64"},
+    "controller_probe_target_sha256": {"$ref": "#/$defs/hex64"},
+    "network_action_envelope": {"$ref": "#/$defs/path"},
+    "network_action_receipt": {"$ref": "#/$defs/path"},
+    "network_action_agent_sha256": {"$ref": "#/$defs/hex64"},
+    "network_action_signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
+    "network_action_public_key": {"type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]{40,160}( [^\\r\\n]{1,120})?$"},
+    "network_action_max_age_seconds": {"type": "integer", "minimum": 1, "maximum": 1800},
+    "ssh_keygen_path": {"$ref": "#/$defs/path"},
+    "capacity_session_dir": {"$ref": "#/$defs/path"}
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "path": {"type": "string", "pattern": "^/([^/]+/)*[^/]+$"}
+  }
+}

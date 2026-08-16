@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 qualification-only controller restart action agent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "qualification_marker", "session_id", "contest_id", "source", "components", "docker_socket", "controller", "database_path", "expected_pending_count", "expected_pending_set_sha256", "controller_health", "submission_status", "ordinary_oj", "signer", "signing_public_key", "signing_key_path", "ssh_keygen_path", "lock_path", "recovery_state_path", "receipt_path", "output_path"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "contest_id": {"type": "string", "pattern": "^[a-f0-9]{24}$"},
+    "source": {"type": "object"},
+    "components": {"type": "object"},
+    "docker_socket": {"const": "/var/run/docker.sock"},
+    "controller": {
+      "type": "object", "additionalProperties": false,
+      "required": ["container_id", "image_id", "name", "identity_sha256", "restart_count"],
+      "properties": {
+        "container_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "image_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "name": {"type": "string", "pattern": "^/[A-Za-z0-9_.-]{1,127}$"},
+        "identity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "restart_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "database_path": {"type": "string", "pattern": "^/"},
+    "expected_pending_count": {"type": "integer", "minimum": 1, "maximum": 100},
+    "expected_pending_set_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "controller_health": {
+      "type": "object", "additionalProperties": false,
+      "required": ["url", "timeout_seconds", "deadline_seconds"],
+      "properties": {
+        "url": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:[0-9]+/healthz$"},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 10},
+        "deadline_seconds": {"type": "integer", "minimum": 10, "maximum": 300}
+      }
+    },
+    "submission_status": {
+      "type": "object", "additionalProperties": false,
+      "required": ["url", "token_path", "timeout_seconds"],
+      "properties": {
+        "url": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:[0-9]+/orchestrator/submit/status$"},
+        "token_path": {"type": "string", "pattern": "^/"},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 10}
+      }
+    },
+    "ordinary_oj": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pm2_path", "pm2_home", "processes", "http_probes"],
+      "properties": {
+        "pm2_path": {"type": "string", "pattern": "^/"},
+        "pm2_home": {"type": "string", "pattern": "^/"},
+        "processes": {"type": "array", "minItems": 4, "maxItems": 4},
+        "http_probes": {"type": "array", "minItems": 3, "maxItems": 6}
+      }
+    },
+    "signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
+    "signing_public_key": {"type": "string"},
+    "signing_key_path": {"type": "string", "pattern": "^/"},
+    "ssh_keygen_path": {"type": "string", "pattern": "^/"},
+    "lock_path": {"type": "string", "pattern": "^/"},
+    "recovery_state_path": {"type": "string", "pattern": "^/"},
+    "receipt_path": {"type": "string", "pattern": "^/"},
+    "output_path": {"type": "string", "pattern": "^/"}
+  }
+}

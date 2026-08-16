@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 signed fault recovery action fact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "kind", "scenario", "session_id", "source", "components", "qualification_marker", "started_at", "ended_at", "collector", "signer", "signing_public_key", "payload", "signature"],
+  "properties": {
+    "$schema": {"const": "v1-fault-recovery-action-fact.schema.json"},
+    "schema_version": {"const": 1},
+    "kind": {"const": "fault_recovery_action"},
+    "scenario": {"enum": ["control_restart", "collection_retry", "power_loss_recovery"]},
+    "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "source": {"type": "object"},
+    "components": {"type": "object"},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "ended_at": {"type": "string", "format": "date-time"},
+    "collector": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "agent_sha256"],
+      "properties": {"mode": {"const": "trusted_action_agent"}, "agent_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+    },
+    "signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
+    "signing_public_key": {"type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]{40,160}(?: [^\\r\\n]{1,120})?$"},
+    "payload": {"type": "object"},
+    "signature": {"type": "string", "minLength": 32, "maxLength": 16384}
+  }
+}

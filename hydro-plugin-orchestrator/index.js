@@ -61,6 +61,30 @@ const OrchestratorProblemDraftTooLargeError = CreateError(
     'The problem snapshot is too large to verify safely.',
     413,
 );
+const OrchestratorMaterialConflictError = CreateError(
+    'OrchestratorMaterialConflictError',
+    UserFacingError,
+    'The contest material publication conflicts with the current contest.',
+    409,
+);
+const OrchestratorSubmissionAmbiguousError = CreateError(
+    'OrchestratorSubmissionAmbiguousError',
+    UserFacingError,
+    'The OJ record result is ambiguous; automatic replay is blocked.',
+    409,
+);
+const OrchestratorMaterialBlockedError = CreateError(
+    'OrchestratorMaterialBlockedError',
+    UserFacingError,
+    'The contest material cannot be published after the contest has started.',
+    422,
+);
+const OrchestratorMaterialTooLargeError = CreateError(
+    'OrchestratorMaterialTooLargeError',
+    UserFacingError,
+    'The contest material publication is too large.',
+    413,
+);
 
 function loadToken() {
     if (process.env.ORCHESTRATOR_TOKEN) return process.env.ORCHESTRATOR_TOKEN;
@@ -90,6 +114,14 @@ const PROBLEM_DRAFT_IDEMPOTENCY_FILE = process.env.ORCHESTRATOR_PROBLEM_DRAFT_ID
     || '/root/.hydro/orchestrator-problem-drafts.json';
 const PROBLEM_DRAFT_IDEMPOTENCY_MAX_ENTRIES = Number(
     process.env.ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_MAX_ENTRIES || 2000,
+);
+const MATERIAL_IDEMPOTENCY_FILE = process.env.ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE
+    || '/root/.hydro/orchestrator-material-publications.json';
+const MATERIAL_IDEMPOTENCY_MAX_ENTRIES = Number(
+    process.env.ORCHESTRATOR_MATERIAL_IDEMPOTENCY_MAX_ENTRIES || 2000,
+);
+const MATERIAL_MAX_BYTES = Number(
+    process.env.ORCHESTRATOR_MATERIAL_MAX_BYTES || 64 * 1024 * 1024,
 );
 const PROBLEM_DRAFT_MAX_PROBLEMS = Number(
     process.env.ORCHESTRATOR_PROBLEM_DRAFT_MAX_PROBLEMS || 20,
@@ -121,6 +153,21 @@ const NOTIFICATION_FIELDS = new Set([
     'candidate',
     'student_password',
     'available_at',
+]);
+const MATERIAL_FIELDS = new Set([
+    'publication_id',
+    'tid',
+    'revision',
+    'attachments',
+]);
+const MATERIAL_ATTACHMENT_FIELDS = new Set([
+    'name',
+    'sha256',
+    'content_base64',
+]);
+const MATERIAL_ATTACHMENT_NAMES = new Set([
+    '01_比赛题面.pdf',
+    '02_辅助自测数据.tar.gz',
 ]);
 const PROBLEM_DRAFT_FIELDS = new Set([
     'action',
@@ -212,6 +259,24 @@ const problemDraftIdempotencyState = loadProblemDraftIdempotencyState();
 const problemDraftInFlight = new Map();
 const contestDraftMutations = new Set();
 const contestSubmissionLeases = new Map();
+const submissionResolutionInFlight = new Map();
+
+function loadMaterialIdempotencyState() {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(MATERIAL_IDEMPOTENCY_FILE, 'utf8'));
+        if (parsed?.version !== 1 || typeof parsed.entries !== 'object' || !parsed.entries) {
+            throw new Error('unsupported material publication state format');
+        }
+        return parsed;
+    } catch (error) {
+        if (error?.code === 'ENOENT') return { version: 1, entries: {} };
+        throw new Error(`cannot load orchestrator material publication state: ${error.message}`);
+    }
+}
+
+const materialIdempotencyState = loadMaterialIdempotencyState();
+const materialInFlight = new Map();
+const contestMaterialMutations = new Set();
 
 function pruneIdempotencyState() {
     const entries = Object.entries(idempotencyState.entries);
@@ -230,15 +295,25 @@ function saveIdempotencyState() {
     const directory = path.dirname(IDEMPOTENCY_FILE);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     const tempPath = `${IDEMPOTENCY_FILE}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    let handle;
     try {
-        fs.writeFileSync(tempPath, `${JSON.stringify(idempotencyState)}\n`, {
-            encoding: 'utf8',
-            flag: 'wx',
-            mode: 0o600,
-        });
+        handle = fs.openSync(tempPath, 'wx', 0o600);
+        fs.writeFileSync(handle, `${JSON.stringify(idempotencyState)}\n`, 'utf8');
+        fs.fsyncSync(handle);
+        fs.closeSync(handle);
+        handle = undefined;
         fs.renameSync(tempPath, IDEMPOTENCY_FILE);
         fs.chmodSync(IDEMPOTENCY_FILE, 0o600);
+        if (process.platform !== 'win32') {
+            const directoryHandle = fs.openSync(directory, 'r');
+            try {
+                fs.fsyncSync(directoryHandle);
+            } finally {
+                fs.closeSync(directoryHandle);
+            }
+        }
     } finally {
+        if (handle !== undefined) fs.closeSync(handle);
         try {
             fs.unlinkSync(tempPath);
         } catch (error) {
@@ -315,6 +390,50 @@ function saveProblemDraftIdempotencyState() {
     }
 }
 
+function pruneMaterialIdempotencyState() {
+    const entries = Object.entries(materialIdempotencyState.entries);
+    if (entries.length <= MATERIAL_IDEMPOTENCY_MAX_ENTRIES) return;
+    const removable = entries
+        .filter(([, entry]) => entry.complete)
+        .sort((left, right) => String(left[1].createdAt).localeCompare(String(right[1].createdAt)));
+    const removeCount = entries.length - MATERIAL_IDEMPOTENCY_MAX_ENTRIES;
+    for (const [publicationId] of removable.slice(0, removeCount)) {
+        delete materialIdempotencyState.entries[publicationId];
+    }
+}
+
+function saveMaterialIdempotencyState() {
+    pruneMaterialIdempotencyState();
+    const directory = path.dirname(MATERIAL_IDEMPOTENCY_FILE);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const temporary = `${MATERIAL_IDEMPOTENCY_FILE}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    let handle;
+    try {
+        handle = fs.openSync(temporary, 'wx', 0o600);
+        fs.writeFileSync(handle, `${JSON.stringify(materialIdempotencyState)}\n`, 'utf8');
+        fs.fsyncSync(handle);
+        fs.closeSync(handle);
+        handle = undefined;
+        fs.renameSync(temporary, MATERIAL_IDEMPOTENCY_FILE);
+        fs.chmodSync(MATERIAL_IDEMPOTENCY_FILE, 0o600);
+        if (process.platform !== 'win32') {
+            const directoryHandle = fs.openSync(directory, 'r');
+            try {
+                fs.fsyncSync(directoryHandle);
+            } finally {
+                fs.closeSync(directoryHandle);
+            }
+        }
+    } finally {
+        if (handle !== undefined) fs.closeSync(handle);
+        try {
+            fs.unlinkSync(temporary);
+        } catch (error) {
+            if (error?.code !== 'ENOENT') throw error;
+        }
+    }
+}
+
 function payloadFingerprint(tid, uid, pid, lang, code) {
     return crypto.createHash('sha256')
         .update(JSON.stringify([tid, uid, pid, lang, code]))
@@ -346,6 +465,109 @@ async function completeSubmissionEntry(entry, contestDocId, problemDocId, uid) {
     entry.complete = true;
     saveIdempotencyState();
     return entry.rid;
+}
+
+function recordMatchesSubmissionEntry(record, submissionId, entry) {
+    if (!record || !entry.publicPid || !entry.lang) return false;
+    const recordFingerprint = payloadFingerprint(
+        String(entry.contestDocId),
+        Number(entry.uid),
+        String(entry.publicPid),
+        String(entry.lang),
+        String(record.code || '').replace(/\r\n/g, '\n'),
+    );
+    return String(record.domainId || '') === DOMAIN
+        && String(record.contest || '') === String(entry.contestDocId)
+        && Number(record.pid) === Number(entry.problemDocId)
+        && Number(record.uid) === Number(entry.uid)
+        && String(record.lang || '') === String(entry.lang)
+        && recordFingerprint === entry.fingerprint
+        && record.files?.orchestratorSubmissionId === submissionId
+        && record.files?.orchestratorPayloadSha256 === entry.fingerprint
+        // A record insert without a judge task must not be reported as
+        // delivered. Waiting for judgeAt proves Hydro actually processed it.
+        && record.judgeAt instanceof Date;
+}
+
+async function resolveAmbiguousSubmission(submissionId, entry) {
+    // Older journals did not put an exact, private correlation marker on the
+    // record. They cannot be resolved safely by time/user/problem heuristics.
+    if (!entry.publicPid || !entry.lang) {
+        if (entry.complete && entry.rid) return { status: 'resolved', rid: entry.rid };
+        return { status: 'unsupported' };
+    }
+
+    const candidates = await RecordModel.coll.find({
+        domainId: DOMAIN,
+        contest: submissionContestDocId(entry.contestDocId),
+        pid: entry.problemDocId,
+        uid: entry.uid,
+        lang: entry.lang,
+        'files.orchestratorSubmissionId': submissionId,
+        'files.orchestratorPayloadSha256': entry.fingerprint,
+    }).project({
+        _id: 1,
+        code: 1,
+        contest: 1,
+        domainId: 1,
+        files: 1,
+        judgeAt: 1,
+        lang: 1,
+        pid: 1,
+        uid: 1,
+    }).limit(2).toArray();
+    if (!candidates.length) return { status: 'missing' };
+    if (candidates.length !== 1) {
+        return { status: 'multiple' };
+    }
+    if (!recordMatchesSubmissionEntry(candidates[0], submissionId, entry)) {
+        return { status: 'pending' };
+    }
+
+    const candidateRid = String(candidates[0]._id);
+    if (entry.rid && String(entry.rid) !== candidateRid) return { status: 'multiple' };
+    // Even completed journal entries are correlated against the live record
+    // collection on every status query. This makes the read-only endpoint a
+    // uniqueness proof for qualification and recovery, rather than merely a
+    // replay of an old local receipt.
+    if (entry.complete && entry.rid) return { status: 'resolved', rid: candidateRid };
+
+    entry.rid = candidateRid;
+    entry.phase = 'record_created';
+    saveIdempotencyState();
+    const rid = await completeSubmissionEntry(
+        entry,
+        submissionContestDocId(entry.contestDocId),
+        entry.problemDocId,
+        entry.uid,
+    );
+    return { status: 'resolved', rid };
+}
+
+class OrchestratorSubmissionStatusHandler extends Handler {
+    noCheckPermView = true;
+
+    async post() {
+        const headerToken = this.request.headers['x-orchestrator-token'];
+        if (!tokenMatches(headerToken)) throw new InvalidTokenError('orchestrator');
+        const submissionId = String(this.request.body?.submission_id || '');
+        if (!/^[0-9a-f]{64}$/.test(submissionId)) {
+            throw new BadRequestError('orchestrator submission status');
+        }
+        const entry = idempotencyState.entries[submissionId];
+        if (!entry) {
+            this.response.body = { status: 'unknown' };
+            return;
+        }
+        const active = submissionResolutionInFlight.get(submissionId);
+        const work = active || resolveAmbiguousSubmission(submissionId, entry);
+        if (!active) submissionResolutionInFlight.set(submissionId, work);
+        try {
+            this.response.body = await work;
+        } finally {
+            if (!active) submissionResolutionInFlight.delete(submissionId);
+        }
+    }
 }
 
 function tokenMatches(input) {
@@ -436,6 +658,156 @@ function sameNumberArray(left, right) {
 
 function sameJsonValue(left, right) {
     return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function parseMaterialPublicationRequest(body) {
+    if (!body || Array.isArray(body) || typeof body !== 'object'
+        || Object.keys(body).some((key) => !MATERIAL_FIELDS.has(key))) {
+        throw new BadRequestError('orchestrator material publication payload');
+    }
+    const publicationId = String(body.publication_id || '').toLowerCase();
+    const tid = String(body.tid || '').toLowerCase();
+    const revision = String(body.revision || '');
+    if (!/^[0-9a-f]{64}$/.test(publicationId)
+        || !/^[0-9a-f]{24}$/.test(tid)
+        || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(revision)
+        || !Array.isArray(body.attachments)
+        || body.attachments.length !== MATERIAL_ATTACHMENT_NAMES.size) {
+        throw new BadRequestError('orchestrator material publication identity');
+    }
+    let totalBytes = 0;
+    const names = new Set();
+    const attachments = body.attachments.map((raw) => {
+        if (!raw || Array.isArray(raw) || typeof raw !== 'object'
+            || Object.keys(raw).some((key) => !MATERIAL_ATTACHMENT_FIELDS.has(key))) {
+            throw new BadRequestError('orchestrator material attachment');
+        }
+        const name = String(raw.name || '');
+        const sha256 = String(raw.sha256 || '').toLowerCase();
+        const encoded = String(raw.content_base64 || '');
+        if (!MATERIAL_ATTACHMENT_NAMES.has(name)
+            || names.has(name)
+            || !/^[0-9a-f]{64}$/.test(sha256)
+            || !encoded
+            || encoded.length % 4 !== 0
+            || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+            throw new BadRequestError('orchestrator material attachment');
+        }
+        const content = Buffer.from(encoded, 'base64');
+        if (!content.length
+            || content.toString('base64') !== encoded
+            || problemDraftSha256(content) !== sha256) {
+            throw new BadRequestError('orchestrator material attachment digest');
+        }
+        totalBytes += content.length;
+        if (totalBytes > MATERIAL_MAX_BYTES) throw new OrchestratorMaterialTooLargeError();
+        names.add(name);
+        return { name, sha256, size: content.length, content };
+    }).sort((left, right) => left.name.localeCompare(right.name));
+    if ([...MATERIAL_ATTACHMENT_NAMES].some((name) => !names.has(name))) {
+        throw new BadRequestError('orchestrator material attachment set');
+    }
+    return {
+        publicationId,
+        tid,
+        revision,
+        attachments,
+    };
+}
+
+function materialPublicationFingerprint(request) {
+    return problemDraftJsonSha256([
+        'noi-material-publication-v1',
+        request.tid,
+        request.revision,
+        request.attachments.map(({ name, sha256, size }) => ({ name, sha256, size })),
+    ]);
+}
+
+async function exactStreamSha256(source, byteLimit) {
+    const digest = crypto.createHash('sha256');
+    let size = 0;
+    for await (const value of source) {
+        const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        size += chunk.length;
+        if (size > byteLimit) throw new OrchestratorMaterialTooLargeError();
+        digest.update(chunk);
+    }
+    return { sha256: digest.digest('hex'), size };
+}
+
+function materialStoragePath(tid, name) {
+    return `contest/${DOMAIN}/${tid}/private/${name}`;
+}
+
+function materialMarker(request, fingerprint) {
+    return {
+        version: 1,
+        publicationId: request.publicationId,
+        revision: request.revision,
+        fingerprint,
+        attachments: request.attachments.map(({ name, sha256, size }) => ({
+            name,
+            sha256,
+            size,
+        })),
+    };
+}
+
+function materialResult(entry) {
+    return {
+        status: 'published',
+        publication_id: entry.publicationId,
+        tid: entry.tid,
+        revision: entry.revision,
+        attachments: entry.attachments.map((item) => ({ ...item })),
+    };
+}
+
+async function verifyPublishedMaterials(tdoc, entry) {
+    const marker = tdoc.orchestratorMaterials;
+    if (!marker
+        || marker.version !== 1
+        || marker.publicationId !== entry.publicationId
+        || marker.revision !== entry.revision
+        || marker.fingerprint !== entry.fingerprint
+        || !sameJsonValue(marker.attachments, entry.attachments)) {
+        return false;
+    }
+    const privateFiles = Array.isArray(tdoc.privateFiles) ? tdoc.privateFiles : [];
+    for (const expected of entry.attachments) {
+        const matches = privateFiles.filter((item) => item?.name === expected.name);
+        if (matches.length !== 1 || Number(matches[0].size) !== expected.size) return false;
+        const source = await StorageModel.get(materialStoragePath(entry.tid, expected.name));
+        const actual = await exactStreamSha256(source, MATERIAL_MAX_BYTES);
+        if (actual.size !== expected.size || actual.sha256 !== expected.sha256) return false;
+    }
+    return true;
+}
+
+function isOwnedMaterialMarker(marker) {
+    if (!marker || marker.version !== 1
+        || !/^[0-9a-f]{64}$/.test(String(marker.publicationId || ''))
+        || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(marker.revision || ''))
+        || !/^[0-9a-f]{64}$/.test(String(marker.fingerprint || ''))
+        || !Array.isArray(marker.attachments)
+        || marker.attachments.length !== MATERIAL_ATTACHMENT_NAMES.size) {
+        return false;
+    }
+    const names = new Set();
+    for (const item of marker.attachments) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)
+            || !MATERIAL_ATTACHMENT_NAMES.has(item.name)
+            || names.has(item.name)
+            || !/^[0-9a-f]{64}$/.test(String(item.sha256 || ''))
+            || !Number.isSafeInteger(item.size)
+            || item.size <= 0
+            || item.size > MATERIAL_MAX_BYTES) {
+            return false;
+        }
+        names.add(item.name);
+    }
+    return [...MATERIAL_ATTACHMENT_NAMES].every((name) => names.has(name));
 }
 
 function snapshotPidRecord(value, pids, field) {
@@ -1179,7 +1551,9 @@ function problemDraftResult(entry) {
 }
 
 function acquireContestSubmissionLease(tid) {
-    if (contestDraftMutations.has(tid)) throw new OrchestratorProblemDraftConflictError();
+    if (contestDraftMutations.has(tid) || contestMaterialMutations.has(tid)) {
+        throw new OrchestratorProblemDraftConflictError();
+    }
     contestSubmissionLeases.set(tid, (contestSubmissionLeases.get(tid) || 0) + 1);
 }
 
@@ -1190,10 +1564,21 @@ function releaseContestSubmissionLease(tid) {
 }
 
 function acquireContestDraftMutation(tid) {
-    if (contestDraftMutations.has(tid) || contestSubmissionLeases.get(tid)) {
+    if (contestDraftMutations.has(tid)
+        || contestMaterialMutations.has(tid)
+        || contestSubmissionLeases.get(tid)) {
         throw new OrchestratorProblemDraftConflictError();
     }
     contestDraftMutations.add(tid);
+}
+
+function acquireContestMaterialMutation(tid) {
+    if (contestDraftMutations.has(tid)
+        || contestMaterialMutations.has(tid)
+        || contestSubmissionLeases.get(tid)) {
+        throw new OrchestratorMaterialConflictError();
+    }
+    contestMaterialMutations.add(tid);
 }
 
 function problemDraftFingerprint(request) {
@@ -1486,6 +1871,172 @@ class OrchestratorProblemFileIoHandler extends Handler {
     }
 }
 
+class OrchestratorMaterialHandler extends Handler {
+    noCheckPermView = true;
+
+    async post() {
+        const headerToken = this.request.headers['x-orchestrator-token'];
+        if (!tokenMatches(headerToken)) throw new InvalidTokenError('orchestrator');
+
+        const request = parseMaterialPublicationRequest(this.request.body || {});
+        const fingerprint = materialPublicationFingerprint(request);
+        if (request.publicationId !== fingerprint) {
+            throw new BadRequestError('orchestrator material publication id');
+        }
+        let entry = materialIdempotencyState.entries[request.publicationId];
+        if (entry && entry.fingerprint !== fingerprint) {
+            throw new OrchestratorMaterialConflictError();
+        }
+        const active = materialInFlight.get(request.publicationId);
+        if (active && active.fingerprint !== fingerprint) {
+            throw new OrchestratorMaterialConflictError();
+        }
+
+        const work = active?.promise || (async () => {
+            if (!entry) {
+                entry = {
+                    publicationId: request.publicationId,
+                    tid: request.tid,
+                    revision: request.revision,
+                    fingerprint,
+                    attachments: request.attachments.map(({ name, sha256, size }) => ({
+                        name,
+                        sha256,
+                        size,
+                    })),
+                    uploaded: [],
+                    complete: false,
+                    createdAt: new Date().toISOString(),
+                };
+                materialIdempotencyState.entries[request.publicationId] = entry;
+                saveMaterialIdempotencyState();
+            }
+
+            acquireContestMaterialMutation(request.tid);
+            try {
+                const tid = new ObjectId(request.tid);
+                let tdoc = await ContestModel.get(DOMAIN, tid);
+                const beginAt = dateMs(tdoc.beginAt);
+                if (beginAt === null || Date.now() >= beginAt) {
+                    throw new OrchestratorMaterialBlockedError();
+                }
+                if (tdoc.rule !== 'oi') {
+                    throw new BadRequestError('orchestrator material contest rule');
+                }
+                const previousMarker = tdoc.orchestratorMaterials
+                    ? JSON.parse(JSON.stringify(tdoc.orchestratorMaterials))
+                    : null;
+                if (previousMarker) {
+                    if (await verifyPublishedMaterials(tdoc, entry)) {
+                        entry.complete = true;
+                        entry.completedAt ||= new Date().toISOString();
+                        saveMaterialIdempotencyState();
+                        return materialResult(entry);
+                    }
+                    if (!isOwnedMaterialMarker(previousMarker)) {
+                        throw new OrchestratorMaterialConflictError();
+                    }
+                }
+
+                const currentPrivate = Array.isArray(tdoc.privateFiles)
+                    ? tdoc.privateFiles
+                    : [];
+                const reservedPrivate = currentPrivate.filter(
+                    (item) => MATERIAL_ATTACHMENT_NAMES.has(item?.name),
+                );
+                if ((!previousMarker && reservedPrivate.length)
+                    || (previousMarker
+                        && (reservedPrivate.length !== MATERIAL_ATTACHMENT_NAMES.size
+                            || [...MATERIAL_ATTACHMENT_NAMES].some(
+                                (name) => reservedPrivate.filter(
+                                    (item) => item?.name === name,
+                                ).length !== 1,
+                            )))) {
+                    throw new OrchestratorMaterialConflictError();
+                }
+
+                const publishedFiles = [];
+                for (const attachment of request.attachments) {
+                    const target = materialStoragePath(request.tid, attachment.name);
+                    await StorageModel.put(target, attachment.content, 1);
+                    const meta = await StorageModel.getMeta(target);
+                    if (!meta || Number(meta.size) !== attachment.size) {
+                        throw new OrchestratorMaterialConflictError();
+                    }
+                    const source = await StorageModel.get(target);
+                    const verified = await exactStreamSha256(source, MATERIAL_MAX_BYTES);
+                    if (verified.size !== attachment.size
+                        || verified.sha256 !== attachment.sha256) {
+                        throw new OrchestratorMaterialConflictError();
+                    }
+                    publishedFiles.push({
+                        _id: attachment.name,
+                        name: attachment.name,
+                        size: Number(meta.size),
+                        lastModified: meta.lastModified,
+                        etag: String(meta.etag || ''),
+                    });
+                    if (!entry.uploaded.includes(attachment.name)) {
+                        entry.uploaded.push(attachment.name);
+                        entry.uploaded.sort();
+                        saveMaterialIdempotencyState();
+                    }
+                }
+
+                tdoc = await ContestModel.get(DOMAIN, tid);
+                const commitBeginAt = dateMs(tdoc.beginAt);
+                if (commitBeginAt === null || Date.now() >= commitBeginAt) {
+                    throw new OrchestratorMaterialBlockedError();
+                }
+                const commitMarker = tdoc.orchestratorMaterials || null;
+                const commitReserved = (tdoc.privateFiles || []).filter(
+                    (item) => MATERIAL_ATTACHMENT_NAMES.has(item?.name),
+                );
+                if (tdoc.rule !== 'oi'
+                    || !sameJsonValue(commitMarker, previousMarker)
+                    || (!previousMarker && commitReserved.length)
+                    || (previousMarker
+                        && (commitReserved.length !== MATERIAL_ATTACHMENT_NAMES.size
+                            || [...MATERIAL_ATTACHMENT_NAMES].some(
+                                (name) => commitReserved.filter(
+                                    (item) => item?.name === name,
+                                ).length !== 1,
+                            )))) {
+                    throw new OrchestratorMaterialConflictError();
+                }
+                const remaining = (tdoc.privateFiles || []).filter(
+                    (item) => !MATERIAL_ATTACHMENT_NAMES.has(item?.name),
+                );
+                await ContestModel.edit(DOMAIN, tid, {
+                    privateFiles: remaining.concat(publishedFiles),
+                    orchestratorMaterials: materialMarker(request, fingerprint),
+                });
+
+                const applied = await ContestModel.get(DOMAIN, tid);
+                if (!await verifyPublishedMaterials(applied, entry)) {
+                    throw new OrchestratorMaterialConflictError();
+                }
+                entry.complete = true;
+                entry.completedAt = new Date().toISOString();
+                saveMaterialIdempotencyState();
+                return materialResult(entry);
+            } finally {
+                contestMaterialMutations.delete(request.tid);
+            }
+        })();
+
+        if (!active) materialInFlight.set(
+            request.publicationId,
+            { fingerprint, promise: work },
+        );
+        try {
+            this.response.body = await work;
+        } finally {
+            if (!active) materialInFlight.delete(request.publicationId);
+        }
+    }
+}
+
 class OrchestratorNotifyHandler extends Handler {
     noCheckPermView = true;
 
@@ -1640,6 +2191,15 @@ class OrchestratorSubmitHandler extends Handler {
             return;
         }
         if (persisted) {
+            // The reservation is durable before RecordModel.add.  If the
+            // process died (or RecordModel.add threw) before the returned RID
+            // was durably attached, the insert may or may not exist.  Never
+            // guess and never call add again: an operator can disambiguate by
+            // the bound payload and reservation timestamp without risking a
+            // duplicate OJ submission.
+            if (!persisted.rid) {
+                throw new OrchestratorSubmissionAmbiguousError();
+            }
             // A durable but incomplete journal bypasses mutable eligibility
             // checks and resumes only its missing side effects. New entries
             // persist both docIds; old journals fall back to minimal reads.
@@ -1675,9 +2235,10 @@ class OrchestratorSubmitHandler extends Handler {
             return;
         }
 
-        // The journal is written only after RecordModel.add returns. A process
-        // crash in that narrow interval cannot be made exactly-once by this
-        // single-process file journal, so retries deliberately remain new.
+        // New requests persist their reservation before RecordModel.add. The
+        // private record markers below let the status endpoint resolve a lost
+        // response by exact identity; normal submission retries never call add
+        // again while that reservation is incomplete.
 
         acquireContestSubmissionLease(tidText);
         try {
@@ -1729,6 +2290,25 @@ class OrchestratorSubmitHandler extends Handler {
         const work = active?.promise || (async () => {
             let entry = idempotencyState.entries[submissionId];
             if (!entry) {
+                entry = {
+                    fingerprint,
+                    rid: '',
+                    contestDocId: String(tdoc.docId),
+                    problemDocId: pdoc.docId,
+                    publicPid: pid,
+                    uid,
+                    lang,
+                    statusUpdated: false,
+                    problemCounted: false,
+                    userCounted: false,
+                    complete: false,
+                    phase: 'reserved',
+                    createdAt: new Date().toISOString(),
+                };
+                idempotencyState.entries[submissionId] = entry;
+                // This reservation must reach stable storage before the first
+                // irreversible OJ write.  A failure here creates no record.
+                saveIdempotencyState();
                 const rid = await RecordModel.add(
                     DOMAIN,
                     pdoc.docId,
@@ -1736,21 +2316,17 @@ class OrchestratorSubmitHandler extends Handler {
                     lang,
                     normalized,
                     true,
-                    { contest: tdoc.docId, type: 'judge' },
+                    {
+                        contest: tdoc.docId,
+                        files: {
+                            orchestratorSubmissionId: submissionId,
+                            orchestratorPayloadSha256: fingerprint,
+                        },
+                        type: 'judge',
+                    },
                 );
-                entry = {
-                    fingerprint,
-                    rid: String(rid),
-                    contestDocId: String(tdoc.docId),
-                    problemDocId: pdoc.docId,
-                    uid,
-                    statusUpdated: false,
-                    problemCounted: false,
-                    userCounted: false,
-                    complete: false,
-                    createdAt: new Date().toISOString(),
-                };
-                idempotencyState.entries[submissionId] = entry;
+                entry.rid = String(rid);
+                entry.phase = 'record_created';
                 saveIdempotencyState();
             }
             return completeSubmissionEntry(entry, tdoc.docId, pdoc.docId, uid);
@@ -1787,6 +2363,19 @@ exports.apply = (ctx) => {
             'ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_MAX_ENTRIES must be an integer of at least 100',
         );
     }
+    if (!Number.isSafeInteger(MATERIAL_IDEMPOTENCY_MAX_ENTRIES)
+        || MATERIAL_IDEMPOTENCY_MAX_ENTRIES < 100) {
+        throw new Error(
+            'ORCHESTRATOR_MATERIAL_IDEMPOTENCY_MAX_ENTRIES must be an integer of at least 100',
+        );
+    }
+    if (!Number.isSafeInteger(MATERIAL_MAX_BYTES)
+        || MATERIAL_MAX_BYTES < 1024 * 1024
+        || MATERIAL_MAX_BYTES > 512 * 1024 * 1024) {
+        throw new Error(
+            'ORCHESTRATOR_MATERIAL_MAX_BYTES must be between 1 MiB and 512 MiB',
+        );
+    }
     if (!Number.isSafeInteger(PROBLEM_DRAFT_MAX_PROBLEMS)
         || PROBLEM_DRAFT_MAX_PROBLEMS < 1
         || PROBLEM_DRAFT_MAX_PROBLEMS > 100) {
@@ -1819,6 +2408,7 @@ exports.apply = (ctx) => {
     saveIdempotencyState();
     if (NOTIFICATION_ALLOWED_HOSTS.size) saveNotificationIdempotencyState();
     saveProblemDraftIdempotencyState();
+    saveMaterialIdempotencyState();
     // Keep the notification route under /orchestrator/submit*: the deployment
     // Caddy rule already makes this whole prefix return 404 publicly, while
     // the orchestrator can reach Hydro's loopback listener directly.
@@ -1828,9 +2418,19 @@ exports.apply = (ctx) => {
         OrchestratorProblemFileIoHandler,
     );
     ctx.Route(
+        'orchestrator_materials',
+        '/orchestrator/submit/materials',
+        OrchestratorMaterialHandler,
+    );
+    ctx.Route(
         'orchestrator_notify',
         '/orchestrator/submit/notify',
         OrchestratorNotifyHandler,
+    );
+    ctx.Route(
+        'orchestrator_submit_status',
+        '/orchestrator/submit/status',
+        OrchestratorSubmissionStatusHandler,
     );
     ctx.Route(
         'orchestrator_submit',

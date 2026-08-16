@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+import yaml
 
 from services.config import load_config
 
@@ -38,6 +39,29 @@ orchestrator:
 
 
 class ConfigTests(unittest.TestCase):
+    def test_qualification_failure_marker_is_off_by_default_and_strict_when_enabled(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "config.yaml"
+            path.write_text(CONFIG, encoding="utf-8")
+            with patch.dict(os.environ, {"TEST_ACCESS_KEY": "key-id"}, clear=False):
+                self.assertNotIn("qualification_failure_marker_path", load_config(path)["hydro"])
+            data = yaml.safe_load(CONFIG)
+            data["hydro"]["qualification_failure_marker_path"] = "/app/data/qualification/collection-retry.json"
+            path.write_text(yaml.safe_dump(data), encoding="utf-8")
+            with patch.dict(os.environ, {"TEST_ACCESS_KEY": "key-id"}, clear=False), \
+                    self.assertRaisesRegex(ValueError, "qualification_marker"):
+                load_config(path)
+            data["hydro"]["qualification_marker"] = "NOI-V1-QUAL-1234567890ABCDEF"
+            path.write_text(yaml.safe_dump(data), encoding="utf-8")
+            with patch.dict(os.environ, {"TEST_ACCESS_KEY": "key-id"}, clear=False):
+                loaded = load_config(path)
+            self.assertEqual(loaded["hydro"]["qualification_marker"], data["hydro"]["qualification_marker"])
+            data["hydro"]["qualification_failure_marker_path"] = "/tmp/collection-retry.json"
+            path.write_text(yaml.safe_dump(data), encoding="utf-8")
+            with patch.dict(os.environ, {"TEST_ACCESS_KEY": "key-id"}, clear=False), \
+                    self.assertRaisesRegex(ValueError, "/app/data/qualification"):
+                load_config(path)
+
     def test_environment_expansion_and_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.yaml"
@@ -155,6 +179,41 @@ frontend_proxy:
             cfg["contest_server"]["gateway_public_base_url"],
             "http://198.51.100.10",
         )
+
+    def test_gateway_bind_address_accepts_specific_non_loopback_ipv4(self):
+        configured = CONFIG.replace(
+            "  docker_network: seats\n",
+            "  docker_network: seats\n"
+            "  gateway_bind_address: 192.0.2.2\n",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text(configured, encoding="utf-8")
+            with patch.dict(
+                os.environ, {"TEST_ACCESS_KEY": "key-id"}, clear=False
+            ):
+                cfg = load_config(path)
+        self.assertEqual(
+            cfg["contest_server"]["gateway_bind_address"], "192.0.2.2"
+        )
+
+    def test_gateway_bind_address_rejects_loopback_ipv6_and_invalid(self):
+        for value in ("127.0.0.1", "::1", "not-an-address"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                configured = CONFIG.replace(
+                    "  docker_network: seats\n",
+                    "  docker_network: seats\n"
+                    f"  gateway_bind_address: {value}\n",
+                )
+                path = Path(directory) / "config.yaml"
+                path.write_text(configured, encoding="utf-8")
+                with patch.dict(
+                    os.environ, {"TEST_ACCESS_KEY": "key-id"}, clear=False
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, "gateway_bind_address"
+                    ):
+                        load_config(path)
 
     def test_direct_access_rejects_unverifiable_null_frontend(self):
         direct = CONFIG.replace(

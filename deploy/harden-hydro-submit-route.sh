@@ -19,6 +19,11 @@ caddy=${CADDY_BIN:-/root/.nix-profile/bin/caddy}
 caddy_admin_url=${CADDY_ADMIN_URL:-http://127.0.0.1:2019}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 backup="${caddyfile}.submit-route-backup.${timestamp}"
+no_caddy_load=${NO_CADDY_LOAD:-0}
+if [[ "${no_caddy_load}" != 0 && "${no_caddy_load}" != 1 ]]; then
+  printf 'NO_CADDY_LOAD must equal 0 or 1\n' >&2
+  exit 2
+fi
 
 test -s "${caddyfile}"
 test -x "${caddy}"
@@ -26,8 +31,10 @@ cp -a "${caddyfile}" "${backup}"
 
 rollback() {
   cp -a "${backup}" "${caddyfile}"
-  curl -fsS -X POST -H 'Content-Type: text/caddyfile' \
-    --data-binary "@${caddyfile}" "${caddy_admin_url%/}/load" >/dev/null || true
+  if [[ "${no_caddy_load}" = 0 ]]; then
+    curl -fsS -X POST -H 'Content-Type: text/caddyfile' \
+      --data-binary "@${caddyfile}" "${caddy_admin_url%/}/load" >/dev/null || true
+  fi
 }
 trap 'rollback' ERR
 
@@ -84,6 +91,11 @@ temporary.replace(path)
 PY
 
 "${caddy}" validate --config "${caddyfile}" --adapter caddyfile
+if [[ "${no_caddy_load}" = 1 ]]; then
+  trap - ERR
+  echo "hydro_submit_route_candidate_ready path=${caddyfile} backup=${backup}"
+  exit 0
+fi
 curl -fsS -X POST -H 'Content-Type: text/caddyfile' \
   --data-binary "@${caddyfile}" "${caddy_admin_url%/}/load" >/dev/null
 

@@ -10,7 +10,7 @@ export STUDENT_USER="${USER_NAME}"
 HOME_DIR="/home/${USER_NAME}"
 CANDIDATE_ID="${CANDIDATE_ID:-U0000}"
 PROBLEM_NAMES="${PROBLEM_NAMES:-}"
-SUBMISSION_MODE="${SUBMISSION_MODE:-folder}"
+SUBMISSION_MODE="${SUBMISSION_MODE:-both}"
 WEB_SUBMIT_URL="${WEB_SUBMIT_URL:-}"
 HAS_TEST_DATA="${HAS_TEST_DATA:-0}"
 BUNDLE_DIR="/run/contest-materials"
@@ -70,8 +70,8 @@ if [[ ! "${CANDIDATE_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; then
     echo "invalid CANDIDATE_ID" >&2
     exit 1
 fi
-if [[ ! "${SUBMISSION_MODE}" =~ ^(folder|web|both)$ ]]; then
-    echo "invalid SUBMISSION_MODE" >&2
+if [[ "${SUBMISSION_MODE}" != "both" ]]; then
+    echo "V1 requires the unified formal-directory submission contract" >&2
     exit 1
 fi
 if [[ ! "${HAS_TEST_DATA}" =~ ^[01]$ ]]; then
@@ -139,7 +139,7 @@ cat > "${HOME_DIR}/.config/autostart/contest-materials.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=比赛资料
-Exec=nautilus --new-window /home/student/比赛资料（从这里开始）
+Exec=nautilus --new-window /home/student/Desktop
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 EOF
@@ -193,36 +193,14 @@ for managed_path in \
     "${HOME_DIR}/Desktop/answers.desktop" \
     "${HOME_DIR}/Desktop/web-submit.desktop" \
     "${HOME_DIR}/Desktop/CSP 程序回收系统.desktop" \
-    "${HOME_DIR}/Desktop/答案文件夹（自动回收）"; do
+    "${HOME_DIR}/Desktop/答案文件夹（自动回收）" \
+    "${HOME_DIR}/提交方式.txt"; do
     prepare_managed_path "${managed_path}"
 done
-if [[ "${SUBMISSION_MODE}" =~ ^(web|both)$ ]]; then
-    if [[ ! "${WEB_SUBMIT_URL}" =~ ^https?://[A-Za-z0-9._:/?\&=%-]+$ ]]; then
-        echo "invalid WEB_SUBMIT_URL" >&2
-        exit 1
-    fi
-    cat > "${HOME_DIR}/Desktop/CSP 程序回收系统.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=CSP 程序回收系统
-Comment=网页递交源代码，每题以最后一次提交为准
-Exec=firefox --new-window ${WEB_SUBMIT_URL}
-Icon=web-browser
-Terminal=false
-EOF
+if [[ ! "${WEB_SUBMIT_URL}" =~ ^https?://[A-Za-z0-9._:/?\&=%-]+$ ]]; then
+    echo "invalid WEB_SUBMIT_URL" >&2
+    exit 1
 fi
-
-prepare_managed_path "${HOME_DIR}/提交方式.txt"
-cat > "${HOME_DIR}/提交方式.txt" <<EOF
-本场提交方式：${SUBMISSION_MODE}
-准考证号（答案目录名）：${CANDIDATE_ID}
-答案目录：${ANSWER_DIR}
-自测数据：$([[ "${HAS_TEST_DATA}" == "1" ]] && echo "桌面“测试数据”（只读，不参与收卷和计分）" || echo "本场未下发")
-
-folder：比赛结束自动回收答案目录。
-web：使用桌面“CSP 程序回收系统”，每题以网页最后一次提交为准。
-both：网页为正式提交；答案文件夹同时回收作为备份。某题没有网页提交时使用文件夹版本。
-EOF
 
 find "${HOME_DIR}/Desktop" -maxdepth 1 -type f -name '*.desktop' -exec chmod 0755 {} +
 rm -f /etc/machine-id
@@ -237,39 +215,37 @@ find "${HOME_DIR}" \( -path "${HOME_DIR}/试题" -o -path "${HOME_DIR}/测试数
 for managed_path in \
     "${HOME_DIR}/Desktop/paper.desktop" \
     "${HOME_DIR}/Desktop/试题.pdf" \
-    "${HOME_DIR}/Desktop/测试数据"; do
+    "${HOME_DIR}/Desktop/测试数据" \
+    "${HOME_DIR}/Desktop/答案文件夹（自动回收）" \
+    "${HOME_DIR}/Desktop/01_比赛题面.pdf" \
+    "${HOME_DIR}/Desktop/02_辅助自测数据" \
+    "${HOME_DIR}/Desktop/03_答案文件夹" \
+    "${HOME_DIR}/Desktop/04_CSP程序回收系统.html" \
+    "${HOME_DIR}/Desktop/05_使用说明.txt"; do
     prepare_managed_path "${managed_path}"
 done
-ensure_symlink "${HOME_DIR}/试题/paper.pdf" "${HOME_DIR}/Desktop/试题.pdf"
-chown -h "${USER_NAME}:${USER_NAME}" "${HOME_DIR}/Desktop/试题.pdf"
-if [[ "${HAS_TEST_DATA}" == "1" ]]; then
-    ensure_symlink "${HOME_DIR}/测试数据" "${HOME_DIR}/Desktop/测试数据"
-    chown -h "${USER_NAME}:${USER_NAME}" "${HOME_DIR}/Desktop/测试数据"
+if [[ "${HAS_TEST_DATA}" != "1" ]]; then
+    echo "V1 contest contract requires approved practice data" >&2
+    exit 1
 fi
-ensure_symlink "${ANSWER_DIR}" "${HOME_DIR}/Desktop/答案文件夹（自动回收）"
-chown -h "${USER_NAME}:${USER_NAME}" \
-    "${HOME_DIR}/Desktop/答案文件夹（自动回收）"
 
 # The canonical bundle is root-owned. Student-writable home paths only contain
 # replaceable symlinks, so a stale directory or symlink cannot redirect the
 # root entrypoint or prevent the seat from becoming ready after a restart.
 install -d -o root -g root -m 0755 "${BUNDLE_DIR}"
 for managed_path in \
-    "${BUNDLE_DIR}/00_请先看.txt" \
-    "${BUNDLE_DIR}/01_试题.pdf" \
-    "${BUNDLE_DIR}/02_测试数据" \
-    "${BUNDLE_DIR}/03_答案文件夹（自动回收）" \
+    "${BUNDLE_DIR}/01_比赛题面.pdf" \
+    "${BUNDLE_DIR}/02_辅助自测数据" \
+    "${BUNDLE_DIR}/03_答案文件夹" \
     "${BUNDLE_DIR}/04_CSP程序回收系统.html" \
+    "${BUNDLE_DIR}/05_使用说明.txt" \
     "${BUNDLE_DIR}/.manifest"; do
     prepare_managed_path "${managed_path}"
 done
-ensure_symlink "${HOME_DIR}/试题/paper.pdf" "${BUNDLE_DIR}/01_试题.pdf"
-if [[ "${HAS_TEST_DATA}" == "1" ]]; then
-    ensure_symlink "${HOME_DIR}/测试数据" "${BUNDLE_DIR}/02_测试数据"
-fi
-ensure_symlink "${ANSWER_DIR}" "${BUNDLE_DIR}/03_答案文件夹（自动回收）"
-if [[ "${SUBMISSION_MODE}" =~ ^(web|both)$ ]]; then
-    cat > "${BUNDLE_DIR}/04_CSP程序回收系统.html" <<EOF
+ensure_symlink "${HOME_DIR}/试题/paper.pdf" "${BUNDLE_DIR}/01_比赛题面.pdf"
+ensure_symlink "${HOME_DIR}/测试数据" "${BUNDLE_DIR}/02_辅助自测数据"
+ensure_symlink "${ANSWER_DIR}" "${BUNDLE_DIR}/03_答案文件夹"
+cat > "${BUNDLE_DIR}/04_CSP程序回收系统.html" <<EOF
 <!doctype html>
 <html lang="zh-CN">
 <head>
@@ -283,37 +259,40 @@ if [[ "${SUBMISSION_MODE}" =~ ^(web|both)$ ]]; then
 </body>
 </html>
 EOF
-fi
-if [[ "${HAS_TEST_DATA}" == "1" ]]; then
-    TESTDATA_GUIDE='2. 02_测试数据：学生自测数据，只读、不参与评分。'
-else
-    TESTDATA_GUIDE='2. 本场未下发自测数据。'
-fi
-if [[ "${SUBMISSION_MODE}" =~ ^(web|both)$ ]]; then
-    WEB_GUIDE='4. 04_CSP程序回收系统.html：双击后打开网页递交系统。'
-else
-    WEB_GUIDE='4. 本场未启用网页递交，请使用答案文件夹。'
-fi
-cat > "${BUNDLE_DIR}/00_请先看.txt" <<EOF
+cat > "${BUNDLE_DIR}/05_使用说明.txt" <<EOF
 准考证号：${CANDIDATE_ID}
 
-本目录是本场比赛唯一的资料入口：
-1. 01_试题.pdf：比赛题面。
-${TESTDATA_GUIDE}
-3. 03_答案文件夹（自动回收）：必须把代码保存在对应题目目录中。
-   例如：03_答案文件夹（自动回收）/${EXAMPLE_PROBLEM}/${EXAMPLE_PROBLEM}.cpp
-${WEB_GUIDE}
+桌面五个入口的用途：
+1. 01_比赛题面.pdf：本场 CSP 风格题面。
+2. 02_辅助自测数据：每题 2～4 组 .in/.out，只供自测，不参与评分。
+3. 03_答案文件夹：唯一正式代码目录。
+   例如：03_答案文件夹/${EXAMPLE_PROBLEM}/${EXAMPLE_PROBLEM}.cpp
+   系统只读取规定的 .cpp 源程序；编译生成的 .bin、.in、.out 等文件不参与评分。
+4. 04_CSP程序回收系统.html：从正式代码目录读取并递交到 OJ 系统。
+5. 05_使用说明.txt：本说明。
+
+每次点击递交都会在 OJ 系统产生一条评测记录。保存文件不等于递交；
+只有页面显示“已送入 OJ 系统”才表示该次递交已确认。截止时系统会自动
+冻结 03_答案文件夹，并以截止时最后文件作为最终计分版本。
 
 输入下划线：先按 Ctrl+Space 切到英文，再按 Shift+-。
-短文本可用远程桌面左侧工具栏的剪贴板按钮；长代码请使用网页上传/下载源码。
+短文本可用远程桌面左侧工具栏的剪贴板按钮。
 EOF
 cat > "${BUNDLE_DIR}/.manifest" <<EOF
-schema=2
+schema=3
 candidate_id=${CANDIDATE_ID}
-submission_mode=${SUBMISSION_MODE}
 has_test_data=${HAS_TEST_DATA}
 EOF
 find "${BUNDLE_DIR}" -type f -exec chmod 0644 {} +
+for name in \
+    '01_比赛题面.pdf' \
+    '02_辅助自测数据' \
+    '03_答案文件夹' \
+    '04_CSP程序回收系统.html' \
+    '05_使用说明.txt'; do
+    ensure_symlink "${BUNDLE_DIR}/${name}" "${HOME_DIR}/Desktop/${name}"
+    chown -h "${USER_NAME}:${USER_NAME}" "${HOME_DIR}/Desktop/${name}"
+done
 ensure_symlink "${BUNDLE_DIR}" "${HOME_DIR}/比赛资料（从这里开始）"
 ensure_symlink "${BUNDLE_DIR}" "${HOME_DIR}/Desktop/比赛资料（从这里开始）"
 chown -h "${USER_NAME}:${USER_NAME}" \

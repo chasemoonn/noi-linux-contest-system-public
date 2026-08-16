@@ -14,6 +14,18 @@ def script(name: str) -> str:
 
 
 class ReleaseScriptSafetyTests(unittest.TestCase):
+    def test_iso_digest_label_is_canonical_lowercase_across_release_scripts(self):
+        expected = "c8824240736352e5e4aaf3f6532b40961f75fa9f23d670bb78881355a49d5878"
+        for name in (
+            "build-noi-official-image.sh",
+            "verify-contest-image-local.sh",
+            "deploy-contest-image-from-oj.sh",
+            "attest-cached-noi-rootfs-once.sh",
+        ):
+            source = script(name)
+            self.assertIn(expected, source)
+            self.assertNotIn(expected.upper(), source)
+
     def test_image_deploy_packages_the_invoked_release_source(self):
         source = script("deploy-contest-image-from-oj.sh")
         self.assertIn('${BASH_SOURCE[0]}', source)
@@ -51,17 +63,23 @@ class ReleaseScriptSafetyTests(unittest.TestCase):
         verify = script("verify-contest-image-local.sh")
 
         self.assertIn("ARG NOI_SOURCE_REVISION", dockerfile)
+        self.assertIn("ARG NOI_ISO_SHA256", dockerfile)
         self.assertIn(
             '[[ "${NOI_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]', dockerfile
+        )
+        self.assertIn(
+            '[[ "${NOI_ISO_SHA256}" =~ ^[0-9a-f]{64}$ ]]', dockerfile
         )
         self.assertIn(
             'org.opencontainers.image.revision="${NOI_SOURCE_REVISION}"',
             dockerfile,
         )
+        self.assertIn('org.noi.iso.sha256="${NOI_ISO_SHA256}"', dockerfile)
 
         self.assertIn('SOURCE_REVISION="${3:-}"', build)
         self.assertIn('"${SOURCE_REVISION}" =~ ^[0-9a-f]{40}$', build)
         self.assertIn('--build-arg "NOI_SOURCE_REVISION=${SOURCE_REVISION}"', build)
+        self.assertIn('--build-arg "NOI_ISO_SHA256=${EXPECTED_SHA256}"', build)
         self.assertIn(
             '{{index .Config.Labels "org.opencontainers.image.revision"}}', build
         )
@@ -202,6 +220,42 @@ seed_existing_baseline "sha256:{'a' * 64}"
         self.assertIn(path_export, addon)
         self.assertLess(addon.index(path_export), addon.index('"${pm2}" restart'))
 
+    def test_addon_installer_uses_only_a_frozen_source_release_tree(self):
+        addon = script("install-hydro-orchestrator-addon.sh")
+        self.assertIn('source_dir="${SOURCE_DIR:-/opt/noi-linux-contest-system/current-source/hydro-plugin-orchestrator}"', addon)
+        self.assertIn('EXPECTED_SOURCE_RELEASE:?set EXPECTED_SOURCE_RELEASE', addon)
+        self.assertIn('resolved_source_dir="$(realpath -e -- "${source_dir}")"', addon)
+        self.assertIn('SOURCE_DIR does not resolve to EXPECTED_SOURCE_RELEASE', addon)
+        self.assertIn("source-releases/[a-f0-9]{40}-[a-f0-9]{12}", addon)
+        self.assertIn('relative not in expected', addon)
+        self.assertIn('observed != expected', addon)
+        self.assertLess(addon.index('SOURCE_DIR does not resolve'), addon.index('observed != expected'))
+        self.assertLess(addon.index('observed != expected'), addon.index('"${node}" --check'))
+
+    def test_addon_installer_has_one_exact_external_transaction_mode(self):
+        addon = script("install-hydro-orchestrator-addon.sh")
+        self.assertIn('external_transaction="${EXTERNAL_INSTALL_TRANSACTION:-0}"', addon)
+        self.assertIn('EXTERNAL_INSTALL_TRANSACTION must be 0 or 1', addon)
+        self.assertIn('if [[ "${external_transaction}" = 0 ]]; then\n  trap \'rollback\' ERR', addon)
+        self.assertIn('"transaction":"external"', addon)
+        self.assertIn('compgen -A variable ORCHESTRATOR_', addon)
+        self.assertLess(addon.index('compgen -A variable ORCHESTRATOR_'), addon.index('source "${plugin_env}"'))
+        self.assertIn('nested_prefix!=desired', addon)
+        self.assertIn('not set(top_prefix).issubset(desired)', addon)
+        self.assertIn('"ORCHESTRATOR_TOKEN" in desired', addon)
+
+    def test_caddy_children_support_candidate_only_mode(self):
+        harden = script("harden-hydro-submit-route.sh")
+        configure = script("configure-hydro-caddy.sh")
+        for content, marker in (
+            (harden, "hydro_submit_route_candidate_ready"),
+            (configure, "caddy_exam_candidate_ready"),
+        ):
+            self.assertIn("NO_CADDY_LOAD", content)
+            self.assertIn('if [[ "${no_caddy_load}" = 1 ]]', content)
+            self.assertIn(marker, content)
+            self.assertLess(content.index(marker), content.index("curl -fsS -X POST", content.index(marker)))
+
     def test_addon_rollback_supports_legacy_token_and_waits_for_hydro(self):
         addon = script("install-hydro-orchestrator-addon.sh")
         rollback = addon[addon.index("rollback() {") : addon.index("trap 'rollback' ERR")]
@@ -217,7 +271,9 @@ seed_existing_baseline "sha256:{'a' * 64}"
     def test_addon_post_install_probes_accept_only_explicit_client_errors(self):
         addon = script("install-hydro-orchestrator-addon.sh")
         probes = addon[
-            addon.index("for endpoint in '' '/notify' '/problem-fileio'; do") :
+            addon.index(
+                "for endpoint in '' '/notify' '/problem-fileio' '/materials'; do"
+            ) :
             addon.index("trap - ERR")
         ]
         self.assertIn('case "${status}" in', probes)
@@ -296,6 +352,7 @@ seed_existing_baseline "sha256:{'a' * 64}"
             "ORCHESTRATOR_IDEMPOTENCY_FILE",
             "ORCHESTRATOR_NOTIFICATION_IDEMPOTENCY_FILE",
             "ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE",
+            "ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE",
         )
         health = script("health-check.sh")
         self.assertIn("orchestrator-plugin.env", health)
@@ -363,6 +420,41 @@ seed_existing_baseline "sha256:{'a' * 64}"
         for signal in ("HUP", "INT", "TERM"):
             self.assertIn(f"trap 'rollback_promotion ", source)
             self.assertIn(signal, source)
+
+    def test_interrupted_promotion_has_an_explicit_fail_closed_recovery(self):
+        source = script("recover-image-promotion-local.sh")
+        self.assertIn("--expected-marker-sha256", source)
+        self.assertIn("NOI_IMAGE_RECOVERY_LOCK_HELD", source)
+        self.assertIn("NOI_IMAGE_RECOVERY_DEPLOYMENT_LOCK_HELD", source)
+        self.assertIn("O_NOFOLLOW", source)
+        self.assertIn("label=noi.contest", source)
+        self.assertIn("Docker seat inventory cannot be read", source)
+        self.assertIn("docker info", source)
+        self.assertIn("pending marker SHA256 differs", source)
+        self.assertIn("assert_recorded_pair", source)
+        self.assertIn("assert_current_old_state", source)
+        self.assertIn("STATUS=rolled_back_to_old_pair", source)
+        receipt = source.index('mv -Tf -- "${receipt_temp}" "${receipt}"')
+        receipt_sync = source.index('sync -f "${app}"', receipt)
+        marker_remove = source.index('rm -f -- "${pending}"', receipt_sync)
+        self.assertLess(receipt, receipt_sync)
+        self.assertLess(receipt_sync, marker_remove)
+        self.assertNotIn("docker start", source)
+        self.assertNotIn("docker run", source)
+        self.assertNotIn("docker rm -f", source)
+
+    def test_imported_promotion_has_a_default_off_durable_crash_boundary(self):
+        source = script("promote-imported-contest-image-local.sh")
+        marker = source.index('mv -Tf -- "${transaction_temp}" "${pending}"')
+        ready = source.index('"phase": "marker_durable_before_mutation"')
+        stopped = source.index('kill -STOP "$$"')
+        mutation = source.index('docker tag "${candidate_id}" noi-linux-official:2.0')
+        self.assertLess(marker, ready)
+        self.assertLess(ready, stopped)
+        self.assertLess(stopped, mutation)
+        self.assertIn("NOI_V1_QUALIFICATION_MARKER", source)
+        self.assertIn("NOI_V1_POWER_LOSS_READY_PATH", source)
+        self.assertIn("qualification power-loss process resumed unexpectedly", source)
 
     def test_existing_image_baseline_is_snapshot_not_new_gate(self):
         source = script("deploy-contest-image-from-oj.sh")

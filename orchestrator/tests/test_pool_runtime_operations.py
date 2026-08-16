@@ -132,6 +132,7 @@ class PoolRuntimeOperationTests(unittest.TestCase):
             config(self.root), RunningCVM(), MagicMock(), self.store, MagicMock()
         )
         self.pipe._remote = lambda _: self.remote
+        self.pipe._acquire_deployment_lock = MagicMock(return_value=None)
         self.pipe._pool_runtime_context = MagicMock(
             side_effect=lambda _remote, _contest, _pool: {
                 "resources": self.store.seat_pool_resources(self.tid),
@@ -179,7 +180,6 @@ class PoolRuntimeOperationTests(unittest.TestCase):
             additional_main=1,
             additional_spares=1,
             expected_revision=self.pool.revision,
-            teacher_approved=True,
         )
 
         self.assertFalse(result["replayed"])
@@ -202,23 +202,10 @@ class PoolRuntimeOperationTests(unittest.TestCase):
             additional_main=1,
             additional_spares=1,
             expected_revision=self.pool.revision,
-            teacher_approved=True,
         )
         self.assertTrue(replay["replayed"])
         self.assertEqual(self.pipe._provision_pool_slot.call_count, 2)
         self.assertEqual(len(self.store.seat_pool_resources(self.tid)), 5)
-
-    def test_teacher_approval_gate_runs_before_any_remote_change(self):
-        with self.assertRaises(TeacherApprovalRequiredError):
-            self.pipe.grow_pool(
-                self.tid,
-                additional_main=1,
-                additional_spares=0,
-                expected_revision=self.pool.revision,
-                teacher_approved=False,
-            )
-        self.assertEqual(self.remote.commands, [])
-        self.assertEqual(self.store.seat_pool(self.tid)["revision"], self.pool.revision)
 
     def test_growth_enforces_participant_and_total_container_limits(self):
         self.pipe.cfg["orchestrator"]["seat_pool_maximum"] = 2
@@ -229,7 +216,6 @@ class PoolRuntimeOperationTests(unittest.TestCase):
                 additional_main=1,
                 additional_spares=0,
                 expected_revision=self.pool.revision,
-                teacher_approved=True,
             )
 
         self.pipe.cfg["orchestrator"]["seat_pool_maximum"] = 3
@@ -240,7 +226,6 @@ class PoolRuntimeOperationTests(unittest.TestCase):
                 additional_main=0,
                 additional_spares=1,
                 expected_revision=self.pool.revision,
-                teacher_approved=True,
             )
         self.assertEqual(self.store.seat_pool(self.tid)["revision"], self.pool.revision)
 
@@ -263,7 +248,6 @@ class PoolRuntimeOperationTests(unittest.TestCase):
                 additional_main=2,
                 additional_spares=0,
                 expected_revision=self.pool.revision,
-                teacher_approved=True,
             )
 
         self.assertEqual(self.store.seat_pool(self.tid)["state"], before_pool["state"])
@@ -279,6 +263,9 @@ class PoolRuntimeOperationTests(unittest.TestCase):
 
     def test_failed_assigned_seat_moves_to_verified_spare(self):
         bob_before = self.store.seat_pool_assignment(self.tid, 8)
+        self.pipe._provision_pool_slot = MagicMock(
+            side_effect=lambda _r, _c, _x, spec, _ips: self._resource(spec)
+        )
 
         result = self.pipe.replace_failed_seat(
             self.tid,
@@ -294,7 +281,15 @@ class PoolRuntimeOperationTests(unittest.TestCase):
         self.assertEqual(alice["slot_no"], 3)
         self.assertEqual(alice["resource"]["container"], "container-3")
         self.assertEqual(alice["resource"]["credential_revision"], 2)
-        self.assertIsNone(self.store.seat_pool_resource(self.tid, 1))
+        self.assertTrue(result["capacity_recovered"])
+        self.assertIsNotNone(self.store.seat_pool_resource(self.tid, 1))
+        restored = self.store.seat_pool(self.tid)["state"]["seats"][0]
+        self.assertEqual(restored["state"], "verified")
+        self.assertEqual(restored["failure_count"], 1)
+        self.assertEqual(restored["role"], "spare")
+        self.assertIsNone(restored["uid"])
+        replacement = self.store.seat_pool(self.tid)["state"]["seats"][2]
+        self.assertEqual(replacement["role"], "primary")
         bob = self.store.seat_pool_assignment(self.tid, 8)
         self.assertEqual(bob["slot_no"], 2)
         self.assertEqual(bob["resource"]["token"], bob_before["resource"]["token"])
@@ -302,6 +297,60 @@ class PoolRuntimeOperationTests(unittest.TestCase):
         self.assertIn("docker pause container-1", commands)
         self.assertIn("cp -a --reflink=auto", commands)
         self.assertIn("docker rm -f container-1", commands)
+        self.assertIn("rm -rf -- /data/seats/", commands)
+
+    def test_failed_seat_cutover_stays_committed_when_capacity_repair_fails(self):
+        self.pipe._provision_pool_slot = MagicMock(
+            side_effect=RuntimeError("fresh spare did not pass validation")
+        )
+
+        result = self.pipe.replace_failed_seat(
+            self.tid,
+            1,
+            reason="desktop became unhealthy",
+            expected_revision=self.pool.revision,
+            teacher_approved=True,
+        )
+
+        self.assertFalse(result["capacity_recovered"])
+        self.assertEqual(self.store.seat_pool_assignment(self.tid, 7)["slot_no"], 3)
+        self.assertIsNone(self.store.seat_pool_resource(self.tid, 1))
+        failed = self.store.seat_pool(self.tid)["state"]["seats"][0]
+        self.assertEqual(failed["state"], "planned")
+        self.assertIn("备用容量恢复失败", self.store.get_contest(self.tid)["message"])
+
+    def test_capacity_repair_retry_restores_only_the_isolated_slot(self):
+        self.pipe._provision_pool_slot = MagicMock(
+            side_effect=RuntimeError("first capacity repair fails")
+        )
+        first = self.pipe.replace_failed_seat(
+            self.tid,
+            1,
+            reason="desktop became unhealthy",
+            expected_revision=self.pool.revision,
+            teacher_approved=True,
+        )
+        self.assertFalse(first["capacity_recovered"])
+        degraded = self.store.seat_pool(self.tid)
+        alice = self.store.seat_pool_assignment(self.tid, 7)
+        self.pipe._provision_pool_slot = MagicMock(
+            side_effect=lambda _r, _c, _x, spec, _ips: self._resource(spec)
+        )
+
+        result = self.pipe.repair_pool_capacity(
+            self.tid, 1, expected_revision=degraded["revision"]
+        )
+
+        self.assertTrue(result["recovered"])
+        self.assertEqual(self.store.seat_pool_assignment(self.tid, 7)["slot_no"], 3)
+        self.assertEqual(
+            self.store.seat_pool_assignment(self.tid, 7)["resource"]["token"],
+            alice["resource"]["token"],
+        )
+        restored = self.store.seat_pool(self.tid)["state"]["seats"][0]
+        self.assertEqual(restored["state"], "verified")
+        self.assertEqual(restored["failure_count"], 1)
+        self.assertEqual(restored["role"], "spare")
 
     def test_replacement_commit_failure_restores_gateway_and_resumes_old_seat(self):
         old_assignment = self.store.seat_pool_assignment(self.tid, 7)

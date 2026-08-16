@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 fault recovery evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "status", "session_id", "source", "components", "scenarios", "ordinary_oj_isolation", "signer", "signing_public_key", "signing_public_key_sha256", "action_agent_sha256", "actions", "inputs"],
+  "properties": {
+    "$schema": {"const": "v1-fault-recovery-evidence.schema.json"},
+    "schema_version": {"const": 2},
+    "status": {"const": "passed"},
+    "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "source": {"type": "object"},
+    "components": {"type": "object"},
+    "scenarios": {
+      "type": "object", "additionalProperties": false,
+      "required": ["control_restart", "desktop_reconnect", "single_seat_replace", "network_interruption", "collection_retry", "power_loss_recovery"],
+      "properties": {
+        "control_restart": {"const": true}, "desktop_reconnect": {"const": true},
+        "single_seat_replace": {"const": true}, "network_interruption": {"const": true},
+        "collection_retry": {"const": true}, "power_loss_recovery": {"const": true}
+      }
+    },
+    "ordinary_oj_isolation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["errors", "restarts", "pid_changes"],
+      "properties": {"errors": {"const": 0}, "restarts": {"const": 0}, "pid_changes": {"const": 0}}
+    },
+    "signer": {"type": "string"},
+    "signing_public_key": {"type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]{40,160}( [^\\r\\n]{1,120})?$"},
+    "signing_public_key_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "action_agent_sha256": {
+      "type": "object", "additionalProperties": false,
+      "required": ["control_restart", "collection_retry", "power_loss_recovery"],
+      "properties": {
+        "control_restart": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "collection_retry": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "power_loss_recovery": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "actions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["control_restart", "collection_retry", "power_loss_recovery"],
+      "properties": {
+        "control_restart": {"type": "object"},
+        "collection_retry": {"type": "object"},
+        "power_loss_recovery": {"type": "object"}
+      }
+    },
+    "inputs": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "reference", "sha256"],
+        "properties": {
+          "name": {"enum": ["capacity", "control_restart", "collection_retry", "power_loss_recovery"]},
+          "reference": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.json$"},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    }
+  }
+}

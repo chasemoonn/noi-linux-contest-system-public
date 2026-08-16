@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 frozen capacity measurement probe config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "container_ids", "network_interface", "docker_socket", "telemetry_envelope", "qualification_marker", "telemetry_transport_profile", "telemetry_seat_set_sha256", "telemetry_signer", "telemetry_public_key", "ssh_keygen_path", "measurement_seconds", "telemetry_max_age_seconds", "telemetry_samples_min", "ordinary_oj_envelope", "ordinary_oj_signer", "ordinary_oj_public_key", "ordinary_oj_pm2_fingerprint_sha256", "ordinary_oj_max_age_seconds"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "container_ids": {
+      "type": "array",
+      "minItems": 17,
+      "maxItems": 17,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    },
+    "network_interface": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,32}$"},
+    "docker_socket": {"const": "/var/run/docker.sock"},
+    "telemetry_envelope": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
+    "telemetry_transport_profile": {"const": "direct_http"},
+    "telemetry_seat_set_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "telemetry_signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
+    "telemetry_public_key": {"type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]{40,160}( [^\\r\\n]{1,120})?$"},
+    "ssh_keygen_path": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+    "measurement_seconds": {"type": "integer", "minimum": 2, "maximum": 5},
+    "telemetry_max_age_seconds": {"type": "integer", "minimum": 5, "maximum": 60},
+    "telemetry_samples_min": {"type": "integer", "minimum": 5, "maximum": 10000}
+    ,"ordinary_oj_envelope": {"type": "string", "pattern": "^/[^\\u0000]+$"}
+    ,"ordinary_oj_signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"}
+    ,"ordinary_oj_public_key": {"type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]{40,160}( [^\\r\\n]{1,120})?$"}
+    ,"ordinary_oj_pm2_fingerprint_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    ,"ordinary_oj_max_age_seconds": {"type": "integer", "minimum": 5, "maximum": 60}
+  }
+}

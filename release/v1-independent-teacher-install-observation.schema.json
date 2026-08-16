@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOI Linux V1 machine-produced independent teacher install observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "source", "components", "observed_at", "host", "teacher", "checks", "artifacts"],
+  "properties": {
+    "$schema": {"const": "v1-independent-teacher-install-observation.schema.json"},
+    "schema_version": {"const": 1},
+    "source": {"type": "object"},
+    "components": {"type": "object"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "host": {"type": "object"},
+    "teacher": {"type": "object"},
+    "checks": {"type": "object"},
+    "artifacts": {"type":"object","additionalProperties":false,"required":["install_log","rollback_receipt","ordinary_oj_before","ordinary_oj_after","clean_install_rehearsal"],"properties":{"install_log":{"$ref":"#/$defs/name"},"rollback_receipt":{"$ref":"#/$defs/name"},"ordinary_oj_before":{"$ref":"#/$defs/name"},"ordinary_oj_after":{"$ref":"#/$defs/name"},"clean_install_rehearsal":{"$ref":"#/$defs/name"}}}
+  },
+  "$defs":{"name":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}}
+}

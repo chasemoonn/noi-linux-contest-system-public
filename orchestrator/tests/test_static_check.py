@@ -44,6 +44,23 @@ class StaticCheckTests(unittest.TestCase):
             self.assertEqual(report["apple"]["status"], "ok")
             self.assertEqual(report["apple"]["file"], "BJ-001/apple/apple.cpp")
 
+    def test_official_answer_tree_ignores_local_compile_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            problem = Path(directory) / "BJ-001" / "apple"
+            problem.mkdir(parents=True)
+            (problem / "apple.cpp").write_text(
+                '#include <cstdio>\nint main(){freopen("apple.in","r",stdin);'
+                'freopen("apple.out","w",stdout);}\n',
+                encoding="utf-8",
+            )
+            (problem / "apple.bin").write_bytes(b"local binary")
+            (problem / "apple.in").write_text("1 2\n", encoding="utf-8")
+            (problem / "apple.out").write_text("3\n", encoding="utf-8")
+            (problem / "build").mkdir()
+            report = check_answer_tree(directory, "BJ-001", ["apple"])
+            self.assertEqual(report["apple"]["status"], "ok")
+            self.assertEqual(report["apple"]["issues"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
