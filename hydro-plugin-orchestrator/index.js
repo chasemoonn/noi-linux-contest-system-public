@@ -17,6 +17,8 @@ const {
     InvalidTokenError,
     MessageModel,
     ObjectId,
+    PERM,
+    PermissionError,
     ProblemModel,
     ProblemNotFoundError,
     RecordModel,
@@ -99,6 +101,9 @@ function loadToken() {
 
 const TOKEN = loadToken();
 const DOMAIN = process.env.ORCHESTRATOR_DOMAIN || 'system';
+const TEACHER_ADMIN_URL = String(
+    process.env.ORCHESTRATOR_TEACHER_ADMIN_URL || '',
+).trim();
 const MAX_CODE_BYTES = Number(process.env.ORCHESTRATOR_MAX_CODE_BYTES || 512 * 1024);
 const IDEMPOTENCY_FILE = process.env.ORCHESTRATOR_IDEMPOTENCY_FILE
     || '/root/.hydro/orchestrator-idempotency.json';
@@ -138,6 +143,40 @@ const PROBLEM_DRAFT_MAX_LINE_BYTES = Number(
 const PROBLEM_DRAFT_CLONE_VERIFY_ATTEMPTS = 10;
 const PROBLEM_DRAFT_CLONE_VERIFY_BASE_DELAY_MS = 25;
 const PROBLEM_DRAFT_CLONE_VERIFY_MAX_DELAY_MS = 500;
+
+function validTeacherAdminUrl(value) {
+    try {
+        const parsed = new URL(value);
+        return parsed.protocol === 'https:'
+            && Boolean(parsed.hostname)
+            && !parsed.username
+            && !parsed.password
+            && !parsed.search
+            && !parsed.hash
+            && (parsed.port === '' || parsed.port === '443')
+            && parsed.pathname === '/admin';
+    } catch {
+        return false;
+    }
+}
+
+function makeTeacherTicket({ uid, uname, tid, now = Date.now() }) {
+    const issuedAt = Math.floor(now / 1000);
+    const payload = {
+        exp: issuedAt + 60,
+        iat: issuedAt,
+        nonce: crypto.randomBytes(18).toString('base64url'),
+        tid: String(tid).toLowerCase(),
+        uid: Number(uid),
+        uname: String(uname),
+        v: 1,
+    };
+    const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = crypto.createHmac('sha256', TOKEN)
+        .update(`noi-teacher-ticket-v1:${encoded}`, 'ascii')
+        .digest('base64url');
+    return `${encoded}.${signature}`;
+}
 const NOTIFICATION_ALLOWED_HOSTS = new Set(
     String(process.env.ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS || '')
         .split(',')
@@ -2344,6 +2383,37 @@ class OrchestratorSubmitHandler extends Handler {
     }
 }
 
+class OrchestratorTeacherConsoleHandler extends Handler {
+    async get(domainId, tid) {
+        if (!TEACHER_ADMIN_URL) {
+            throw new UserFacingError('NOI Linux teacher console is not configured.');
+        }
+        const contestId = tid instanceof ObjectId ? tid : new ObjectId(String(tid));
+        const tdoc = await ContestModel.get(domainId, contestId);
+        if (!tdoc) throw new BadRequestError('Contest not found.');
+        if (!this.user.own(tdoc) && !this.user.hasPerm(PERM.PERM_EDIT_CONTEST)) {
+            throw new PermissionError(PERM.PERM_EDIT_CONTEST);
+        }
+        const uid = Number(this.user._id);
+        const uname = String(this.user.uname || '');
+        if (!Number.isSafeInteger(uid) || uid <= 0 || !uname || uname.length > 128) {
+            throw new InvalidTokenError();
+        }
+        const ticket = makeTeacherTicket({ uid, uname, tid: contestId.toString() });
+        this.response.redirect = `${TEACHER_ADMIN_URL}/sso?ticket=${encodeURIComponent(ticket)}`;
+    }
+}
+
+class OrchestratorTeacherHomeHandler extends Handler {
+    async get(domainId) {
+        const canEditAll = this.user.hasPerm(PERM.PERM_EDIT_CONTEST);
+        const query = canEditAll ? {} : { owner: Number(this.user._id) };
+        const contests = await ContestModel.getMulti(domainId, query).limit(100).toArray();
+        this.response.template = 'orchestrator_teacher_home.html';
+        this.response.body = { contests };
+    }
+}
+
 exports.apply = (ctx) => {
     if (!TOKEN || TOKEN.length < 32) {
         throw new Error('orchestrator token is missing or shorter than 32 characters');
@@ -2402,6 +2472,11 @@ exports.apply = (ctx) => {
             'ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS accepts exact DNS hostnames only',
         );
     }
+    if (TEACHER_ADMIN_URL && !validTeacherAdminUrl(TEACHER_ADMIN_URL)) {
+        throw new Error(
+            'ORCHESTRATOR_TEACHER_ADMIN_URL must be an exact HTTPS /admin URL',
+        );
+    }
     // Prove that persistence is writable before accepting a request. Otherwise
     // a successful RecordModel.add followed by a filesystem error could not be
     // recognized when the orchestrator retries.
@@ -2412,6 +2487,16 @@ exports.apply = (ctx) => {
     // Keep the notification route under /orchestrator/submit*: the deployment
     // Caddy rule already makes this whole prefix return 404 publicly, while
     // the orchestrator can reach Hydro's loopback listener directly.
+    ctx.Route(
+        'orchestrator_teacher_home',
+        '/noi-linux',
+        OrchestratorTeacherHomeHandler,
+    );
+    ctx.Route(
+        'orchestrator_teacher_console',
+        '/contest/:tid/noi-linux',
+        OrchestratorTeacherConsoleHandler,
+    );
     ctx.Route(
         'orchestrator_problem_fileio',
         '/orchestrator/submit/problem-fileio',
@@ -2437,4 +2522,13 @@ exports.apply = (ctx) => {
         '/orchestrator/submit',
         OrchestratorSubmitHandler,
     );
+    if (typeof ctx.injectUI === 'function') {
+        ctx.injectUI(
+            'Nav',
+            'orchestrator_teacher_home',
+            { prefix: 'orchestrator_teacher', text: 'NOI Linux' },
+            (handler) => handler.user.hasPerm(PERM.PERM_EDIT_CONTEST_SELF)
+                || handler.user.hasPerm(PERM.PERM_EDIT_CONTEST),
+        );
+    }
 };

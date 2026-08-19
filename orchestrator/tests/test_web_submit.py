@@ -81,6 +81,16 @@ atexit.register(_cleanup_runtime)
 
 
 class CloudAdminRouteTests(unittest.TestCase):
+    def test_oj_teacher_session_cannot_cross_contest_boundary(self):
+        teacher = main.TeacherIdentity(
+            42,
+            "coach",
+            "1" * 24,
+            1_900_000_000,
+        )
+        with self.assertRaisesRegex(HTTPException, "只允许管理所选比赛"):
+            main.admin_export("2" * 24, teacher)
+
     def test_manual_shutdown_uses_fail_closed_pipeline_operation(self):
         with mock.patch.object(main.pipe, "shutdown_server") as shutdown, mock.patch.object(
             main.cvm, "status"

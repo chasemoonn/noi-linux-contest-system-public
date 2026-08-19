@@ -1,0 +1,24 @@
+{% extends "layout/basic.html" %}
+{% block content %}
+<div class="row"><div class="medium-10 large-8 medium-centered columns">
+  <div class="section">
+    <div class="section__header"><h1 class="section__title">NOI Linux 考试管理</h1></div>
+    <div class="section__body">
+      <p>请选择一场由你管理的 OJ 比赛。进入后只能操作该场比赛。</p>
+      {% if not contests.length %}
+        <p>尚无可管理的比赛。请先在 OJ 创建 OI 比赛。</p>
+      {% else %}
+        <table class="data-table"><thead><tr><th>比赛</th><th>时间</th><th></th></tr></thead><tbody>
+        {% for contest in contests %}
+          <tr>
+            <td><a href="{{ url('contest_detail', tid=contest.docId) }}">{{ contest.title }}</a></td>
+            <td>{{ datetimeSpan(contest.beginAt, contest.endAt)|safe }}</td>
+            <td><a class="button primary" href="{{ url('orchestrator_teacher_console', tid=contest.docId) }}">进入考试管理</a></td>
+          </tr>
+        {% endfor %}
+        </tbody></table>
+      {% endif %}
+    </div>
+  </div>
+</div></div>
+{% endblock %}

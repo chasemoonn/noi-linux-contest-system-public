@@ -278,6 +278,7 @@ plugin_values = {
     'ORCHESTRATOR_MATERIAL_IDEMPOTENCY_MAX_ENTRIES': '2000',
     'ORCHESTRATOR_MATERIAL_MAX_BYTES': str(192 * 1024 * 1024),
     'ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS': frontend_domain,
+    'ORCHESTRATOR_TEACHER_ADMIN_URL': f'https://{frontend_domain}/admin',
 }
 plugin_temporary = plugin_env.with_suffix('.env.tmp')
 plugin_temporary.write_text(

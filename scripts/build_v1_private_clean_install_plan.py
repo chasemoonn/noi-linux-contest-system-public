@@ -74,6 +74,7 @@ def plugin_env_file(path:Path,hydro_domain:str,frontend_domain:str)->bytes:
       "ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE":"/root/.hydro/orchestrator-state/materials.json",
       "ORCHESTRATOR_MATERIAL_IDEMPOTENCY_MAX_ENTRIES":"2000","ORCHESTRATOR_MATERIAL_MAX_BYTES":"201326592",
       "ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS":frontend_domain,
+      "ORCHESTRATOR_TEACHER_ADMIN_URL":f"https://{frontend_domain}/admin",
     }
     if values!=expected:raise PrivatePlanError("desired plugin env contract differs")
     return raw

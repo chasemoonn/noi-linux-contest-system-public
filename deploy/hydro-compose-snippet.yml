@@ -19,6 +19,7 @@ services:
       ORCHESTRATOR_MATERIAL_IDEMPOTENCY_MAX_ENTRIES: "2000"
       ORCHESTRATOR_MATERIAL_MAX_BYTES: "201326592"
       ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS: ${ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS:?set exact student HTTPS host allowlist}
+      ORCHESTRATOR_TEACHER_ADMIN_URL: ${ORCHESTRATOR_TEACHER_ADMIN_URL:?set exact HTTPS /admin URL}
     volumes:
       - ./addon:/root/.hydro/addon
       - ./orchestrator-state:/root/.hydro/orchestrator-state

@@ -61,11 +61,13 @@ import os, stat, sys
 
 root = Path(sys.argv[1])
 expected = {
-    "index.js", "package.json", "tests",
+    "index.js", "package.json", "tests", "templates",
     "tests/orchestrator-materials.test.js",
     "tests/orchestrator-notify.test.js",
     "tests/orchestrator-problem-fileio.test.js",
     "tests/orchestrator-submit.test.js",
+    "tests/orchestrator-teacher-sso.test.js",
+    "templates/orchestrator_teacher_home.html",
 }
 observed = set()
 for path in root.rglob("*"):
@@ -74,7 +76,7 @@ for path in root.rglob("*"):
     if stat.S_ISLNK(info.st_mode) or relative not in expected:
         raise SystemExit("plugin source tree contains an unexpected entry")
     if path.is_dir():
-        if relative != "tests":
+        if relative not in {"tests", "templates"}:
             raise SystemExit("plugin source tree contains an unexpected directory")
     elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise SystemExit("plugin source file metadata is unsafe")
@@ -101,7 +103,8 @@ unset ORCHESTRATOR_TOKEN_FILE \
   ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE \
   ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE \
   ORCHESTRATOR_MATERIAL_MAX_BYTES \
-  ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS
+  ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS \
+  ORCHESTRATOR_TEACHER_ADMIN_URL
 while IFS= read -r inherited; do
   unset -v "${inherited}"
 done < <(compgen -A variable ORCHESTRATOR_ || true)
@@ -116,7 +119,8 @@ for required in \
   ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE \
   ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE \
   ORCHESTRATOR_MATERIAL_MAX_BYTES \
-  ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS; do
+  ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS \
+  ORCHESTRATOR_TEACHER_ADMIN_URL; do
   if [[ -z "${!required:-}" ]]; then
     echo "missing ${required} in ${plugin_env}" >&2
     exit 1
@@ -180,8 +184,11 @@ if [[ "${external_transaction}" = 0 ]]; then
 fi
 
 install -d -m 0755 "${addon_dir}"
+install -d -m 0755 "${addon_dir}/templates"
 install -m 0644 "${source_dir}/index.js" "${addon_dir}/index.js"
 install -m 0644 "${source_dir}/package.json" "${addon_dir}/package.json"
+install -m 0644 "${source_dir}/templates/orchestrator_teacher_home.html" \
+  "${addon_dir}/templates/orchestrator_teacher_home.html"
 
 python3 - "${addon_file}" "${addon_dir}" <<'PY'
 import json

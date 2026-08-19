@@ -23,7 +23,8 @@ class PrivateCleanInstallPlanTests(unittest.TestCase):
           "ORCHESTRATOR_NOTIFICATION_IDEMPOTENCY_MAX_ENTRIES":"20000","ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE":"/root/.hydro/orchestrator-state/problem-drafts.json",
           "ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_MAX_ENTRIES":"2000","ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE":"/root/.hydro/orchestrator-state/materials.json",
           "ORCHESTRATOR_MATERIAL_IDEMPOTENCY_MAX_ENTRIES":"2000","ORCHESTRATOR_MATERIAL_MAX_BYTES":"201326592",
-          "ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS":"exam.example.test"}
+          "ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS":"exam.example.test",
+          "ORCHESTRATOR_TEACHER_ADMIN_URL":"https://exam.example.test/admin"}
 
     def test_clean_staging_recovery_uses_its_exact_allowlist(self):
         with tempfile.TemporaryDirectory() as raw:

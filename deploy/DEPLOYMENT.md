@@ -89,6 +89,7 @@ ORCHESTRATOR_PROBLEM_DRAFT_IDEMPOTENCY_FILE=/root/.hydro/orchestrator-state/prob
 ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE=/root/.hydro/orchestrator-state/materials.json
 ORCHESTRATOR_MATERIAL_MAX_BYTES=201326592
 ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS=exam.example.test
+ORCHESTRATOR_TEACHER_ADMIN_URL=https://exam.example.test/admin
 ```
 
 `install-hydro-orchestrator-addon.sh` 和 `health-check.sh` 都从
