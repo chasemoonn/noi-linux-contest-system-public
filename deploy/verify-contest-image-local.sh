@@ -171,7 +171,7 @@ for name in "${containers[@]}"; do
         '/home/student/Desktop/比赛资料（从这里开始）'
     docker exec "${name}" sh -lc \
         "test \"\$(readlink -f '/home/student/比赛资料（从这里开始）')\" = /run/contest-materials"
-    docker exec "${name}" grep -Fqx schema=3 \
+    docker exec "${name}" grep -Fqx schema=4 \
         '/run/contest-materials/.manifest'
     docker exec "${name}" test -r \
         '/run/contest-materials/05_使用说明.txt'
@@ -288,7 +288,7 @@ for entry in \
     '05_使用说明.txt'; do
     docker exec "${container_name}" test -L "/home/student/Desktop/${entry}"
 done
-docker exec "${container_name}" grep -Fqx schema=3 \
+docker exec "${container_name}" grep -Fqx schema=4 \
     '/run/contest-materials/.manifest'
 docker exec "${container_name}" test -r '/run/contest-materials/01_比赛题面.pdf'
 docker exec "${container_name}" test -d '/run/contest-materials/02_辅助自测数据'

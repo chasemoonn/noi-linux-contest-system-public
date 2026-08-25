@@ -4,6 +4,7 @@ from __future__ import annotations
 import atexit
 import asyncio
 from datetime import datetime, timedelta, timezone
+import io
 import os
 from pathlib import Path
 import shutil
@@ -711,7 +712,7 @@ class WebSubmitSessionTests(unittest.TestCase):
 
         self.assertEqual(context, (seat, contest, ["apple"], {}))
 
-    def test_login_cookie_secure_matches_configured_frontend_scheme(self):
+    def test_login_cookie_secure_matches_browser_visible_request_scheme(self):
         context = (
             {
                 "candidate": "alice",
@@ -722,22 +723,41 @@ class WebSubmitSessionTests(unittest.TestCase):
             [],
             {},
         )
-        for public_base_url, secure in (
-            ("https://exam.example.test", True),
-            ("http://127.0.0.1:8600", False),
+        for request_scheme, transport, secure in (
+            ("https", "", True),
+            ("https", "private-http", False),
+            ("http", "", False),
         ):
             configured = {
                 "orchestrator": {
                     "admin_password": "1234567890123456",
-                    "public_base_url": public_base_url,
+                    "public_base_url": "https://exam.example.test",
                 }
             }
-            with self.subTest(public_base_url=public_base_url), mock.patch.object(
+            request = Request(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/submit/token/login",
+                    "scheme": request_scheme,
+                    "server": ("exam.example.test", 443),
+                    "headers": (
+                        [(b"x-noi-submit-transport", transport.encode())]
+                        if transport
+                        else []
+                    ),
+                }
+            )
+            with self.subTest(
+                request_scheme=request_scheme, transport=transport
+            ), mock.patch.object(
                 main, "cfg", configured
             ), mock.patch.object(
                 main, "_web_submit_context", return_value=context
             ):
-                response = main.web_submit_login("token", "alice", "password")
+                response = main.web_submit_login(
+                    request, "token", "alice", "password"
+                )
 
             cookie = response.headers["set-cookie"].lower()
             self.assertEqual("secure" in cookie, secure)
@@ -756,8 +776,20 @@ class WebSubmitSessionTests(unittest.TestCase):
             [],
             {},
         )
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/submit/token/login",
+                "scheme": "https",
+                "server": ("exam.example.test", 443),
+                "headers": [],
+            }
+        )
         with mock.patch.object(main, "_web_submit_context", return_value=context):
-            response = main.web_submit_login("token", " CSP001 ", "中文错密")
+            response = main.web_submit_login(
+                request, "token", " CSP001 ", "中文错密"
+            )
 
         body = response.body.decode("utf-8")
         self.assertEqual(response.status_code, 401)
@@ -809,8 +841,20 @@ class WebSubmitSessionTests(unittest.TestCase):
             ["apple"],
             {},
         )
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/submit/token/login",
+                "scheme": "https",
+                "server": ("exam.example.test", 443),
+                "headers": [],
+            }
+        )
         with mock.patch.object(main, "_web_submit_context", return_value=context):
-            response = main.web_submit_login("token", "CSP001", "password")
+            response = main.web_submit_login(
+                request, "token", "CSP001", "password"
+            )
 
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.headers["location"], "/submit/token?login=accepted")
@@ -1147,12 +1191,13 @@ class WebSubmitTemplateTests(unittest.TestCase):
             "答题",
             "提交时间",
             "内容长度",
-            "递交正式文件",
+            "网页选择 .cpp 递交",
         ):
             self.assertIn(text, answer)
-        self.assertIn("/formal/apple", answer)
-        self.assertIn("/formal/banana", answer)
-        self.assertNotIn("/edit/", answer)
+        self.assertNotIn("/formal/apple", answer)
+        self.assertNotIn("/formal/banana", answer)
+        self.assertIn("/edit/apple", answer)
+        self.assertIn("/edit/banana", answer)
 
     def test_login_replaces_a_corrupted_upstream_contest_title(self):
         response = main._web_login_response(
@@ -1267,7 +1312,7 @@ class WebSubmitTemplateTests(unittest.TestCase):
             self.assertIn("下载源码", page)
             self.assertIn("/download/apple", page)
 
-    def test_legacy_edit_page_redirects_to_single_formal_source_flow(self):
+    def test_edit_page_exposes_cpp_file_upload(self):
         request = Request(
             {"type": "http", "method": "GET", "path": "/submit/token/edit/apple", "headers": []}
         )
@@ -1281,10 +1326,14 @@ class WebSubmitTemplateTests(unittest.TestCase):
             main, "_web_submit_context", return_value=context
         ), mock.patch.object(
             main, "_submit_authenticated", return_value=True
+        ), mock.patch.object(
+            main, "_submission_window_open", return_value=True
         ):
             response = main.web_submit_edit(request, "token", "apple")
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/submit/token")
+        self.assertEqual(response.status_code, 200)
+        body = response.body.decode("utf-8")
+        self.assertIn('type="file"', body)
+        self.assertIn("确认递交 .cpp", body)
 
 
 class WebSubmitRealtimeTests(unittest.TestCase):
@@ -1353,6 +1402,75 @@ class WebSubmitRealtimeTests(unittest.TestCase):
             "a" * 32,
         )
         self.assertEqual(response.status_code, 303)
+
+    def test_formal_submit_cannot_replace_an_existing_web_submission(self):
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/submit/token/formal/apple",
+                "headers": [],
+            }
+        )
+        context = (
+            self.seat,
+            self.contest,
+            ["apple"],
+            {"apple": {"source": "int main(){}"}},
+        )
+        with mock.patch.object(
+            main, "_web_submit_context", return_value=context
+        ), mock.patch.object(
+            main, "_submit_authenticated", return_value=True
+        ), mock.patch.object(
+            main.pipe, "read_formal_source"
+        ) as read_formal, mock.patch.object(
+            main, "_enqueue_web_source"
+        ) as enqueue:
+            response = main.web_submit_formal_file(
+                request, "token", "apple", "b" * 32
+            )
+
+        read_formal.assert_not_called()
+        enqueue.assert_not_called()
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["location"],
+            "/submit/token?error=web_locked&problem=apple",
+        )
+
+    def test_web_file_upload_is_primary_and_enqueues_exact_source(self):
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/submit/token",
+                "headers": [],
+            }
+        )
+        payload = b"int main(){return 0;}\r\n"
+        upload = main.UploadFile(filename="apple.cpp", file=io.BytesIO(payload))
+        context = (self.seat, self.contest, ["apple"], {})
+        with mock.patch.object(
+            main, "_web_submit_context", return_value=context
+        ), mock.patch.object(
+            main, "_submit_authenticated", return_value=True
+        ), mock.patch.object(
+            main, "_submission_window_open", return_value=True
+        ), mock.patch.object(main, "_enqueue_web_source") as enqueue:
+            response = main.web_submit_code(
+                request, "token", "apple", "c" * 32, upload
+            )
+
+        enqueue.assert_called_once_with(
+            self.seat,
+            self.contest,
+            "apple",
+            "int main(){return 0;}\n",
+            "c" * 32,
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/submit/token?saved=apple")
 
     def test_enqueue_uses_atomic_store_gate_after_source_processing(self):
         judge = mock.Mock()

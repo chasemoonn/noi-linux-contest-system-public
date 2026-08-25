@@ -24,7 +24,8 @@ gsettings set org.gnome.desktop.wm.keybindings switch-input-source-backward \
 for launcher in \
     "$HOME/Desktop/answers.desktop" \
     "$HOME/Desktop/web-submit.desktop" \
-    "$HOME/Desktop/CSP 程序回收系统.desktop"; do
+    "$HOME/Desktop/CSP 程序回收系统.desktop" \
+    "$HOME/Desktop/03_开始答题.desktop"; do
     [[ -f "$launcher" ]] || continue
     chmod 0755 "$launcher"
     gio set "$launcher" metadata::trusted true || true

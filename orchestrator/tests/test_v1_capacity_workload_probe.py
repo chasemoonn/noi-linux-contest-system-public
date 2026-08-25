@@ -79,7 +79,7 @@ def make_database(path: Path, row: dict, collection: Path):
         connection.execute("INSERT INTO seats VALUES(?,?,?,?)", (row["contest_id"], item["uid"],
                            f"user-{item['slot_no']:03d}", item["candidate"]))
         for problem_index, problem in enumerate(row["problem_slugs"], start=1):
-            source_path = collection / "slots" / f"{item['slot_no']:03d}" / "answers" / item["candidate"] / problem / f"{problem}.cpp"
+            source_path = collection / str(item["uid"]) / "web" / f"{problem}.cpp"
             digest = probe.sha256_file(source_path)
             rid = f"{item['slot_no'] * 10 + problem_index:024x}"
             submission_id = f"{item['slot_no'] * 10 + problem_index:064x}"
@@ -93,23 +93,29 @@ def make_database(path: Path, row: dict, collection: Path):
 
 def make_collection(path: Path, row: dict) -> str:
     path.mkdir()
-    report = {}; submit_log = {}
+    report = {}; folder_report = {}; web_report = {}; selection = {}; submit_log = {}
     for item in row["seat_bindings"]:
         uname = f"user-{item['slot_no']:03d}"
-        report[uname] = {}; submit_log[uname] = {}
+        report[uname] = {}; folder_report[uname] = {}; web_report[uname] = {}; selection[uname] = {}; submit_log[uname] = {}
         for problem_index, problem in enumerate(row["problem_slugs"], start=1):
             rid = f"{item['slot_no'] * 10 + problem_index:024x}"
             relative = f"{item['candidate']}/{problem}/{problem}.cpp"
-            source_path = path / "slots" / f"{item['slot_no']:03d}" / "answers" / relative
-            source_path.parent.mkdir(parents=True, exist_ok=True)
-            source_path.write_text(f"// {item['slot_no']} {problem}\n")
-            digest = probe.sha256_file(source_path)
-            report[uname][problem] = {"status": "ok", "submission_source": "confirmed_submit",
+            folder_source = path / "slots" / f"{item['slot_no']:03d}" / "answers" / relative
+            folder_source.parent.mkdir(parents=True, exist_ok=True)
+            folder_source.write_text(f"// changed folder {item['slot_no']} {problem}\n")
+            web_source = path / str(item["uid"]) / "web" / f"{problem}.cpp"
+            web_source.parent.mkdir(parents=True, exist_ok=True)
+            web_source.write_text(f"// submitted web {item['slot_no']} {problem}\n")
+            digest = probe.sha256_file(web_source)
+            folder_report[uname][problem] = {"status": "ok", "file": relative}
+            web_report[uname][problem] = {"status": "ok", "file": f"{problem}.cpp", "sha256": digest}
+            selection[uname][problem] = "web_submit"
+            report[uname][problem] = {"status": "ok", "submission_source": "web_submit",
                                       "reuses_confirmed_submission": True, "sha256": digest,
-                                      "file": relative}
+                                      "file": f"{problem}.cpp"}
             submit_log[uname][problem] = {"ok": True, "rid": rid, "reused_realtime": True}
     payloads = {
-        "folder_report.json": {}, "web_report.json": {}, "selection.json": {},
+        "folder_report.json": folder_report, "web_report.json": web_report, "selection.json": selection,
         "report.json": report, "submit_log.json": submit_log,
     }
     digests = {}

@@ -15,6 +15,7 @@ from services.pipeline import (
     DESKTOP_IMAGE_CONTRACT,
     NGINX_CONF,
     NGINX_LOCATION,
+    SUBMIT_PROXY_CONF,
     Pipeline,
     _remote_readonly,
     candidate_id,
@@ -897,6 +898,18 @@ class PipelineHelpersTests(unittest.TestCase):
         self.assertTrue(config.startswith(f"# noi-contest: {tid}\n"))
         self.assertIn("listen 192.0.2.2:80 default_server", config)
 
+    def test_submit_proxy_marks_private_http_browser_transport(self):
+        config = SUBMIT_PROXY_CONF.format(
+            gateway="172.18.0.1",
+            port=18082,
+            origin="https://exam.example.test",
+            origin_host="exam.example.test",
+        )
+        self.assertIn("proxy_set_header X-Forwarded-Proto https;", config)
+        self.assertIn(
+            "proxy_set_header X-NOI-Submit-Transport private-http;", config
+        )
+
     def test_gateway_redirect_includes_seat_scoped_websocket_path(self):
         config = NGINX_LOCATION.format(
             token="seat-token",
@@ -1454,7 +1467,9 @@ class PipelineHelpersTests(unittest.TestCase):
                 self.assertIn(".contest-finalizer-status", desktop_check)
                 self.assertIn("比赛资料（从这里开始）", desktop_check)
                 self.assertIn("/run/contest-materials/.manifest", desktop_check)
-                self.assertIn("schema=3", desktop_check)
+                self.assertIn("schema=4", desktop_check)
+                self.assertIn("03_开始答题.desktop", desktop_check)
+                self.assertIn("apple/apple.cpp", desktop_check)
                 for entry in (
                     "01_比赛题面.pdf",
                     "02_辅助自测数据",
@@ -1784,7 +1799,7 @@ class PipelineHelpersTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_collect_always_uses_frozen_formal_answer_directory(self):
+    def test_collect_prefers_web_per_problem_and_uses_folder_only_as_fallback(self):
         tid = "d" * 24
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1826,7 +1841,7 @@ class PipelineHelpersTests(unittest.TestCase):
 
                 self.assertEqual(
                     report["alice"]["apple"]["submission_source"],
-                    "deadline_snapshot",
+                    "web_submit",
                 )
                 self.assertEqual(
                     report["alice"]["banana"]["submission_source"],

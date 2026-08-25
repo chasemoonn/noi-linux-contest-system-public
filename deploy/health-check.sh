@@ -440,7 +440,7 @@ desktop_probe="${DESKTOP_PROBE_BASE_URL%/}/s/health-check/"
 desktop_code=$(http_status "${desktop_probe}")
 if [[ "${DESKTOP_ACCESS_MODE}" == direct ]]; then
   if [[ "${desktop_expected_open:-unknown}" == true && -n "${DESKTOP_PROBE_TOKEN}" ]]; then
-    oj_valid_page="${EXAM_URL%/}/s/${DESKTOP_PROBE_TOKEN}/vnc.html?path=s/${DESKTOP_PROBE_TOKEN}/websockify&autoconnect=true&resize=scale&quality=${DESKTOP_PROBE_QUALITY}&compression=${DESKTOP_PROBE_COMPRESSION}&reconnect=true&reconnect_delay=5000"
+    oj_valid_page="${EXAM_URL%/}/s/${DESKTOP_PROBE_TOKEN}/vnc.html?path=s/${DESKTOP_PROBE_TOKEN}/websockify&autoconnect=true&view_only=false&resize=remote&quality=${DESKTOP_PROBE_QUALITY}&compression=${DESKTOP_PROBE_COMPRESSION}&reconnect=true&reconnect_delay=5000"
     oj_valid_page_code=$(http_status "${oj_valid_page}")
     oj_valid_ws="${EXAM_URL%/}/s/${DESKTOP_PROBE_TOKEN}/websockify"
     oj_valid_ws_code=$(websocket_status "${oj_valid_ws}")
@@ -464,7 +464,7 @@ if [[ "${DESKTOP_ACCESS_MODE}" == direct && "${desktop_expected_open:-unknown}" 
   if [[ -z "${DESKTOP_PROBE_TOKEN}" ]]; then
     fail 'direct desktop is expected open but DESKTOP_PROBE_TOKEN is empty'
   else
-    valid_page="${DESKTOP_PROBE_BASE_URL%/}/s/${DESKTOP_PROBE_TOKEN}/vnc.html?path=s/${DESKTOP_PROBE_TOKEN}/websockify&autoconnect=true&resize=scale&quality=${DESKTOP_PROBE_QUALITY}&compression=${DESKTOP_PROBE_COMPRESSION}&reconnect=true&reconnect_delay=5000"
+    valid_page="${DESKTOP_PROBE_BASE_URL%/}/s/${DESKTOP_PROBE_TOKEN}/vnc.html?path=s/${DESKTOP_PROBE_TOKEN}/websockify&autoconnect=true&view_only=false&resize=remote&quality=${DESKTOP_PROBE_QUALITY}&compression=${DESKTOP_PROBE_COMPRESSION}&reconnect=true&reconnect_delay=5000"
     valid_page_code=$(http_status "${valid_page}")
     valid_ws="${DESKTOP_PROBE_BASE_URL%/}/s/${DESKTOP_PROBE_TOKEN}/websockify"
     valid_ws_code=$(websocket_status "${valid_ws}")

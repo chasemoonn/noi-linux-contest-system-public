@@ -104,25 +104,33 @@ class MaterialsTests(unittest.TestCase):
         stream = self._zip(
             {
                 "practice/apple/1.in": b"1 2\n",
-                "practice/apple/1.ans": b"3\n",
+                "practice/apple/1.out": b"3\n",
+                "practice/apple/2.in": b"3 4\n",
+                "practice/apple/2.out": b"7\n",
                 "practice/banana/1.in": b"4\n",
                 "practice/banana/1.out": b"8\n",
+                "practice/banana/2.in": b"5\n",
+                "practice/banana/2.out": b"10\n",
             }
         )
         name, payload, digest, count, expanded = read_testdata_upload(
             stream, "自测数据.zip", 1024 * 1024, 1024 * 1024, 20, ["apple", "banana"]
         )
         self.assertEqual(name, "自测数据.zip")
-        self.assertEqual(count, 4)
-        self.assertEqual(expanded, 10)
+        self.assertEqual(count, 8)
+        self.assertEqual(expanded, 21)
         self.assertEqual(payload[4:8], b"\0\0\0\0")
         repeated = read_testdata_upload(
             self._zip(
                 {
                     "practice/apple/1.in": b"1 2\n",
-                    "practice/apple/1.ans": b"3\n",
+                    "practice/apple/1.out": b"3\n",
+                    "practice/apple/2.in": b"3 4\n",
+                    "practice/apple/2.out": b"7\n",
                     "practice/banana/1.in": b"4\n",
                     "practice/banana/1.out": b"8\n",
+                    "practice/banana/2.in": b"5\n",
+                    "practice/banana/2.out": b"10\n",
                 }
             ),
             "自测数据.zip",
@@ -152,10 +160,21 @@ class MaterialsTests(unittest.TestCase):
         stream = self._zip(
             {
                 r"26模拟赛-学生测试数据\T1_books\1.in": b"1\n",
-                r"26模拟赛-学生测试数据\T1_books\1.ans": b"2\n",
+                r"26模拟赛-学生测试数据\T1_books\1.out": b"2\n",
+                r"26模拟赛-学生测试数据\T1_books\2.in": b"2\n",
+                r"26模拟赛-学生测试数据\T1_books\2.out": b"3\n",
                 r"26模拟赛-学生测试数据\T2_study\1.in": b"3\n",
+                r"26模拟赛-学生测试数据\T2_study\1.out": b"4\n",
+                r"26模拟赛-学生测试数据\T2_study\2.in": b"4\n",
+                r"26模拟赛-学生测试数据\T2_study\2.out": b"5\n",
                 r"26模拟赛-学生测试数据\T3_board\1.in": b"4\n",
+                r"26模拟赛-学生测试数据\T3_board\1.out": b"5\n",
+                r"26模拟赛-学生测试数据\T3_board\2.in": b"5\n",
+                r"26模拟赛-学生测试数据\T3_board\2.out": b"6\n",
                 r"26模拟赛-学生测试数据\T4_wall\1.in": b"5\n",
+                r"26模拟赛-学生测试数据\T4_wall\1.out": b"6\n",
+                r"26模拟赛-学生测试数据\T4_wall\2.in": b"6\n",
+                r"26模拟赛-学生测试数据\T4_wall\2.out": b"7\n",
             }
         )
         _, payload, _, count, _ = read_testdata_upload(
@@ -166,20 +185,42 @@ class MaterialsTests(unittest.TestCase):
             20,
             ["books", "study", "board", "wall"],
         )
-        self.assertEqual(count, 5)
+        self.assertEqual(count, 16)
         with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
             self.assertEqual(archive.extractfile("books/1.in").read(), b"1\n")
             self.assertEqual(archive.extractfile("study/1.in").read(), b"3\n")
             self.assertEqual(archive.extractfile("board/1.in").read(), b"4\n")
             self.assertEqual(archive.extractfile("wall/1.in").read(), b"5\n")
 
-    def test_testdata_zip_requires_each_problem_input(self):
+    def test_testdata_zip_requires_paired_input_and_output(self):
         stream = self._zip(
-            {"apple/1.in": b"1\n", "banana/readme.txt": b"no input"}
+            {
+                "apple/1.in": b"1\n",
+                "apple/1.out": b"1\n",
+                "apple/2.in": b"2\n",
+                "apple/2.out": b"2\n",
+                "banana/1.in": b"3\n",
+                "banana/2.in": b"4\n",
+                "banana/2.out": b"4\n",
+            }
         )
-        with self.assertRaisesRegex(MaterialError, "没有 .in"):
+        with self.assertRaisesRegex(MaterialError, "没有成对"):
             read_testdata_upload(
                 stream, "data.zip", 1024, 1024, 10, ["apple", "banana"]
+            )
+
+    def test_testdata_zip_enforces_selected_group_count(self):
+        stream = self._zip(
+            {
+                "apple/1.in": b"1\n",
+                "apple/1.out": b"1\n",
+                "apple/2.in": b"2\n",
+                "apple/2.out": b"2\n",
+            }
+        )
+        with self.assertRaisesRegex(MaterialError, "恰好包含 3 组"):
+            read_testdata_upload(
+                stream, "data.zip", 1024, 1024, 10, ["apple"], 3
             )
 
 

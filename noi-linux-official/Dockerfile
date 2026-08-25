@@ -48,6 +48,7 @@ RUN chmod 0755 \
  && chmod 0755 /usr/local/bin/contest-entrypoint.sh /usr/local/bin/start-contest-vnc.sh \
     /usr/local/bin/configure-contest-desktop.sh /usr/local/bin/finalize-contest-session.sh \
     /usr/local/bin/capture-formal-source.py \
+    /usr/local/bin/patch-novnc-contest-input.py \
     /usr/local/bin/install-firefox-cookie-policy.py \
     /usr/local/bin/verify-firefox-cookie-runtime.py \
  && find /opt/contest-template/Desktop -type f -name '*.desktop' -exec chmod 0755 {} +
@@ -56,6 +57,14 @@ RUN chmod 0755 \
 # fields into the base image's policy document; malformed, conflicting, or
 # ambiguous multi-source policy state must stop the build.
 RUN python3 /usr/local/bin/install-firefox-cookie-policy.py
+
+# Browser VNC can lose modifier key-up events during focus/IME changes, and
+# some host keyboards invert the numeric keypad. Patch only those noVNC event
+# translations; the official NOI Linux desktop and applications stay intact.
+RUN python3 /usr/local/bin/patch-novnc-contest-input.py \
+ && grep -Fq 'contestNumpadKeys' /usr/share/novnc/core/input/util.js \
+ && grep -Fq 'syncModifiers(e)' /usr/share/novnc/core/input/keyboard.js \
+ && grep -Fq 'this._keyboard.syncModifiers(ev)' /usr/share/novnc/core/rfb.js
 
 # Keep the mutable source identity after all expensive filesystem layers.
 # A new audited source revision must change the immutable image identity, but
@@ -69,6 +78,9 @@ RUN [[ "${NOI_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]] \
 # Orchestration fails closed unless the desktop implements this versioned
 # finalizer-status protocol.
 LABEL org.noi.desktop.contract="finalizer-status-v1" \
+      org.noi.desktop.input-fidelity="ibus-explicit-switch-v2" \
+      org.noi.desktop.keyboard-fidelity="numpad-and-stale-modifier-v1" \
+      org.noi.desktop.student-ux="canonical-source-and-geany-run-v2" \
       org.noi.iso.sha256="${NOI_ISO_SHA256}" \
       org.opencontainers.image.revision="${NOI_SOURCE_REVISION}"
 

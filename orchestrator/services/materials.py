@@ -126,6 +126,7 @@ def read_testdata_upload(
     expanded_maximum: int,
     maximum_files: int,
     problems: list[str],
+    groups_per_problem: int | None = None,
 ) -> tuple[str, bytes, str, int, int]:
     """Validate a teacher ZIP and convert it to a safe, normalized tarball.
 
@@ -150,6 +151,8 @@ def read_testdata_upload(
     problem_set = set(problems)
     if not problem_set:
         raise MaterialError("登记题目为空，无法校验测试数据")
+    if groups_per_problem is not None and not 2 <= int(groups_per_problem) <= 4:
+        raise MaterialError("每题辅助数据组数必须在 2 到 4 之间")
     try:
         archive = zipfile.ZipFile(io.BytesIO(payload))
     except zipfile.BadZipFile as exc:
@@ -218,7 +221,12 @@ def read_testdata_upload(
         normalized: list[tuple[zipfile.ZipInfo, tuple[str, ...]]] = []
         seen: set[str] = set()
         present: set[str] = set()
-        inputs: set[str] = set()
+        input_groups: dict[str, set[str]] = {
+            problem: set() for problem in problems
+        }
+        output_groups: dict[str, set[str]] = {
+            problem: set() for problem in problems
+        }
         for info, parts in candidates:
             target_parts = parts[1:] if strip_wrapper else parts
             if target_parts:
@@ -226,28 +234,64 @@ def read_testdata_upload(
                     canonical_problem_folder(target_parts[0]),
                     *target_parts[1:],
                 )
-            if len(target_parts) < 2 or target_parts[0] not in problem_set:
+            if len(target_parts) != 2 or target_parts[0] not in problem_set:
                 raise MaterialError(
-                    "测试数据必须按 题目名/文件 的目录结构存放；"
+                    "测试数据必须按 题目名/N.in 与 题目名/N.out 的目录结构存放；"
+                    f"发现: {'/'.join(target_parts)}"
+                )
+            filename = target_parts[-1]
+            suffix = PurePosixPath(filename).suffix.lower()
+            stem = PurePosixPath(filename).stem.casefold()
+            if suffix not in {".in", ".out"} or not stem:
+                raise MaterialError(
+                    "辅助数据只允许成对的 .in/.out 文件；"
                     f"发现: {'/'.join(target_parts)}"
                 )
             target = "/".join(target_parts)
             if target in seen:
                 raise MaterialError(f"测试数据包含重复路径: {target}")
             seen.add(target)
-            present.add(target_parts[0])
-            if target_parts[-1].lower().endswith(".in"):
-                inputs.add(target_parts[0])
+            problem = target_parts[0]
+            present.add(problem)
+            if suffix == ".in":
+                input_groups[problem].add(stem)
+            else:
+                output_groups[problem].add(stem)
             normalized.append((info, target_parts))
 
         missing = problem_set - present
         if missing:
             raise MaterialError("测试数据缺少题目目录: " + ",".join(sorted(missing)))
-        missing_inputs = problem_set - inputs
-        if missing_inputs:
-            raise MaterialError(
-                "以下题目目录中没有 .in 输入文件: " + ",".join(sorted(missing_inputs))
+        for problem in problems:
+            inputs = input_groups[problem]
+            outputs = output_groups[problem]
+            if inputs != outputs:
+                missing_outputs = sorted(inputs - outputs)
+                missing_inputs = sorted(outputs - inputs)
+                detail = []
+                if missing_outputs:
+                    detail.append("缺少 .out: " + ",".join(missing_outputs))
+                if missing_inputs:
+                    detail.append("缺少 .in: " + ",".join(missing_inputs))
+                raise MaterialError(
+                    f"题目 {problem} 的辅助数据没有成对: " + "；".join(detail)
+                )
+            group_count = len(inputs)
+            expected = (
+                int(groups_per_problem)
+                if groups_per_problem is not None
+                else None
             )
+            if expected is not None and group_count != expected:
+                raise MaterialError(
+                    f"题目 {problem} 必须恰好包含 {expected} 组 .in/.out，"
+                    f"当前为 {group_count} 组"
+                )
+            if expected is None and not 2 <= group_count <= 4:
+                raise MaterialError(
+                    f"题目 {problem} 必须包含 2 到 4 组 .in/.out，"
+                    f"当前为 {group_count} 组"
+                )
 
         output = io.BytesIO()
         # tarfile's w:gz mode inherits the wall-clock gzip timestamp.  That

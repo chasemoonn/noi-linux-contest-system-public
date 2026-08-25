@@ -114,6 +114,7 @@ server {{
         proxy_ssl_server_name on;
         proxy_ssl_name {origin_host};
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-NOI-Submit-Transport private-http;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_read_timeout 60s;
         client_max_body_size 256k;
@@ -148,7 +149,7 @@ def _seat_readiness_command(
         "grep -Fqx ready /home/student/.contest-finalizer-status",
         "test -L /home/student/比赛资料（从这里开始）",
         "test -L /home/student/Desktop/比赛资料（从这里开始）",
-        f"grep -Fqx schema=3 {bundle_dir}/.manifest",
+        f"grep -Fqx schema=4 {bundle_dir}/.manifest",
         f"test -r {bundle_dir}/01_比赛题面.pdf",
         f"test -d {bundle_dir}/02_辅助自测数据",
         "test \"$(sha256sum /home/student/试题/paper.pdf | "
@@ -157,6 +158,7 @@ def _seat_readiness_command(
         f"test -r {bundle_dir}/05_使用说明.txt",
         "test -L /home/student/Desktop/01_比赛题面.pdf",
         "test -L /home/student/Desktop/02_辅助自测数据",
+        "test -L /home/student/Desktop/03_开始答题.desktop",
         "test -L /home/student/Desktop/03_答案文件夹",
         "test -L /home/student/Desktop/04_CSP程序回收系统.html",
         "test -L /home/student/Desktop/05_使用说明.txt",
@@ -164,10 +166,18 @@ def _seat_readiness_command(
     student_checks = [
         "test ! -w /home/student/试题/paper.pdf",
         f"test -w {bundle_dir}/03_答案文件夹",
-    ] + [
-        "test -w " + _q(f"/home/student/答案/{candidate}/{problem}")
-        for problem in problems
     ]
+    for problem in problems:
+        problem_dir = f"/home/student/答案/{candidate}/{problem}"
+        source_file = f"{problem_dir}/{problem}.cpp"
+        student_checks.extend(
+            (
+                "test -w " + _q(problem_dir),
+                "test -f " + _q(source_file),
+                "test ! -L " + _q(source_file),
+                "test -w " + _q(source_file),
+            )
+        )
     if testdata_files is not None:
         root_checks.append(
             "test \"$(find /home/student/测试数据 -type f | wc -l)\" "
@@ -217,7 +227,7 @@ def novnc_path(token: str, quality: int, compression: int) -> str:
     """Return the one canonical student noVNC path used by UI and nginx."""
     return (
         f"/s/{token}/vnc.html?path=s/{token}/websockify"
-        f"&autoconnect=true&resize=scale&quality={quality}"
+        f"&autoconnect=true&view_only=false&resize=remote&quality={quality}"
         f"&compression={compression}"
         "&reconnect=true&reconnect_delay=5000"
     )
@@ -2793,9 +2803,10 @@ class Pipeline:
                 )
                 if not frozen.replayed:
                     self._save_pool_state(tid, previous, frozen.state)
-            # The frozen answer directory is authoritative. Drain every
-            # explicit click first so an older retry can never arrive after a
-            # changed deadline snapshot and become the apparent last record.
+            # Drain every explicit web click first. Web submission is
+            # authoritative per student and problem; the frozen answer
+            # directory is used only for problems that were never submitted
+            # through the web page.
             finalize_realtime_web()
 
             server = self.cfg["contest_server"]
@@ -2887,22 +2898,26 @@ class Pipeline:
                         item["sha256"] = hashlib.sha256(encoded).hexdigest()
                         item["size"] = len(encoded)
                     latest = latest_web.get(name)
-                    same_as_confirmed = bool(
-                        source
-                        and latest
-                        and latest.get("submission_id")
-                        and str(latest.get("sha256") or "")
-                        == str(item.get("sha256") or "")
-                    )
-                    source_name = (
-                        "confirmed_submit" if same_as_confirmed else "deadline_snapshot"
-                    )
+                    web_selected = bool(latest)
+                    if web_selected:
+                        # Beijing-style web collection is authoritative per
+                        # student and per problem. Once a problem has a web
+                        # submission, a later folder snapshot must never
+                        # overwrite it at the deadline.
+                        source = str(latest.get("source") or "")
+                        web_item = user_web[name]
+                        item["status"] = web_item["status"]
+                        item["file"] = web_item["file"]
+                        item["issues"] = list(web_item["issues"])
+                        item["sha256"] = str(web_item.get("sha256") or "")
+                        item["size"] = int(web_item.get("size") or 0)
+                    source_name = "web_submit" if web_selected else "deadline_snapshot"
                     item["submission_source"] = source_name
-                    item["reuses_confirmed_submission"] = same_as_confirmed
+                    item["reuses_confirmed_submission"] = web_selected
                     user_report[name] = item
                     user_selection[name] = source_name
                     user_sources[name] = source
-                    user_web_rows[name] = latest if same_as_confirmed else None
+                    user_web_rows[name] = latest if web_selected else None
                 folder_report[uname] = user_folder
                 web_report[uname] = user_web
                 report[uname] = user_report

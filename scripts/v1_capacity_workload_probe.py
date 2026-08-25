@@ -451,17 +451,15 @@ def collect(config: dict, *, now: datetime | None = None) -> dict:
         for problem, item in problems.items():
             submission = submission_by_pair[(uid_by_uname[uname], problem)]
             relative = PurePosixPath(str(item.get("file") or "")) if isinstance(item, dict) else PurePosixPath("")
-            if relative.is_absolute() or len(relative.parts) != 3 or ".." in relative.parts or \
-                    not CANDIDATE.fullmatch(relative.parts[0]) or relative.parts[1] != problem or \
-                    relative.parts[2] != f"{problem}.cpp":
-                raise WorkloadProbeError("workload final source path differs from the CSP contract")
-            frozen_source = directory / "slots" / f"{slot_no:03d}" / "answers" / Path(*relative.parts)
+            if relative.is_absolute() or relative.parts != (f"{problem}.cpp",):
+                raise WorkloadProbeError("workload selected web source path differs")
+            selected_source = directory / str(uid_by_uname[uname]) / "web" / Path(*relative.parts)
             if not isinstance(item, dict) or item.get("status") != "ok" or \
-                    item.get("submission_source") != "confirmed_submit" or \
+                    item.get("submission_source") != "web_submit" or \
                     item.get("reuses_confirmed_submission") is not True or \
                     item.get("sha256") != submission["sha256"] or \
-                    sha256_file(frozen_source) != submission["sha256"]:
-                raise WorkloadProbeError("workload final source differs from confirmed submission")
+                    sha256_file(selected_source) != submission["sha256"]:
+                raise WorkloadProbeError("workload selected web source differs from confirmed submission")
             log = logs[problem]
             if not isinstance(log, dict) or log.get("ok") is not True or \
                     log.get("reused_realtime") is not True or log.get("rid") != submission["rid"]:

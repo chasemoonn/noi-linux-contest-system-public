@@ -135,16 +135,29 @@ def main() -> int:
     for name in (
         "01_比赛题面.pdf",
         "02_辅助自测数据",
+        "03_开始答题.desktop",
         "03_答案文件夹",
         "04_CSP程序回收系统.html",
         "05_使用说明.txt",
     ):
         require(name in entrypoint, f"missing desktop object: {name}", failures)
     require(
-        "V1 requires the unified formal-directory submission contract" in entrypoint,
+        "V1 requires the fixed web-first and folder-fallback submission contract"
+        in entrypoint,
         "desktop must reject legacy submission modes",
         failures,
     )
+    pipeline = source("orchestrator/services/pipeline.py")
+    for marker in (
+        'source_name = "web_submit" if web_selected else "deadline_snapshot"',
+        'user_web_rows[name] = latest if web_selected else None',
+        'item["reuses_confirmed_submission"] = web_selected',
+    ):
+        require(
+            marker in pipeline,
+            f"per-problem web-first collection misses: {marker}",
+            failures,
+        )
     for descriptor_guard in (
         "os.O_NOFOLLOW",
         "dir_fd=",
@@ -1144,7 +1157,7 @@ def main() -> int:
         and "mode=ro" in capacity_workload_probe
         and "PRAGMA query_only=ON" in capacity_workload_probe
         and "archive_manifest" in capacity_workload_probe
-        and "confirmed_submit" in capacity_workload_probe
+        and "web_submit" in capacity_workload_probe
         and "workload probe build requires Linux root" in capacity_workload_builder
         and "v1-capacity-workload-probe-config.schema.json" in capacity_guide,
         "capacity workload fact must cross-bind signed actions, SQLite deliveries, and collection evidence",
@@ -1193,7 +1206,7 @@ def main() -> int:
             print(f"V1_CONTRACT_FAIL {item}", file=sys.stderr)
         return 1
     print(
-        "V1_CONTRACT_OK pages=5 source=formal-directory "
+        "V1_CONTRACT_OK pages=5 source=web-per-problem-folder-fallback "
         "oj-records=append-only ambiguous=no-replay retention=30/180"
     )
     return 0

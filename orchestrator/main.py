@@ -880,7 +880,7 @@ code{background:#eee;padding:2px 6px;border-radius:4px}</style></head><body>
 连接密码：<code>{{ seat.vnc_pass }}</code><br>
 交卷规则：<b>{{ seat.mode_label }}</b><br>
 程序回收：<a href="{{ seat.web_submit_url }}" target="_blank" rel="noopener">打开 CSP 程序回收系统</a><br>
-打开桌面链接 → Connect → 输入密码。代码始终保存在桌面【03_答案文件夹】规定目录；每次递交和截止收卷都读取这里的正式文件。<br>
+打开桌面链接 → Connect → 输入密码。北京赛制优先使用网页选择 .cpp 递交；其他地区可使用桌面【03_答案文件夹】。每道题若没有网页递交，截止时才由正式目录自动兜底。<br>
 {% if notice %}<a href="{{ notice }}" target="_blank" rel="noopener">选手操作文档</a>{% endif %}
 </div>{% else %}<form method="post" action="query">
 <input name="uname" autocomplete="username" placeholder="OJ 用户名" required>
@@ -944,7 +944,7 @@ a{color:inherit}.frame{width:min(1120px,calc(100% - 28px));margin:24px auto;back
 .btn{display:inline-block;border:0;border-radius:2px;padding:6px 12px;text-decoration:none;cursor:pointer;font:13px Arial,"Microsoft YaHei",sans-serif}.btn-view{background:#f3f3f3;color:#444;border:1px solid #cfcfcf}.btn-submit{background:#288fc3;color:#fff;border:1px solid #237da9}.btn-primary{background:#55b95b;color:#fff;padding:9px 25px}.btn-disabled{opacity:.45;pointer-events:none}.actions{display:flex;justify-content:center;gap:7px}
 .edit-title{font-size:18px;margin:0 0 12px}.warning{color:#a64925;line-height:1.8;margin-bottom:12px}.upload-box{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#eef7ff;border:1px solid #bdd7eb;padding:12px;margin-bottom:18px}.upload-box input[type=file]{max-width:420px}.or-divider{text-align:center;color:#77838a;margin:2px 0 12px}.codebox{width:100%;height:320px;padding:12px;border:1px solid #aebcc5;resize:vertical;font:14px/1.5 Consolas,"Courier New",monospace;tab-size:4}.form-actions{display:flex;gap:10px;margin-top:12px}.back{background:#f4f4f4;border:1px solid #ccc;color:#444}
 .code-view{background:#17212b;color:#edf5f8;padding:16px;overflow:auto;white-space:pre;line-height:1.5;min-height:360px}.meta{color:#68757d;margin:12px 0}.small{font-size:12px;color:#73828a}
-.judge-ok{color:#287a32}.judge-wait{color:#8a641c}.judge-error{color:#a22}.judge-local{color:#68757d}
+.judge-ok{color:#287a32}.judge-wait{color:#8a641c}.judge-error{color:#a22}.judge-local{color:#68757d}.submit-error{background:#fff3e3;border:2px solid #df7d1b;color:#713600;padding:12px 15px;margin-bottom:16px;font-weight:bold;line-height:1.7}
 .login-frame{width:min(1060px,calc(100% - 28px));margin:55px auto;background:#063a91;box-shadow:0 3px 18px rgba(7,43,82,.28)}.login-brand{background:#3aa0b8;color:#fff;padding:18px 42px;font-size:25px;font-weight:bold}.login-body{display:flex;min-height:500px}.login-panel{width:43%;padding:105px 68px;background:radial-gradient(circle at 54% 24%,rgba(75,219,255,.65),transparent 18%),#073a90}.login-panel h2{color:#fff;font-weight:normal;margin:0 0 22px}.login-panel input{width:100%;height:44px;border:1px solid #d0d8df;padding:0 12px;font-size:15px}.login-panel input+input{border-top:0}.login-panel button{width:100%;margin-top:14px;height:42px;border:0;background:#57bd5d;color:#fff;font-size:16px;cursor:pointer}.login-error{background:#fff1f1;color:#a22;padding:9px 11px;margin-bottom:10px}.login-hero{position:relative;flex:1;display:flex;align-items:center;justify-content:center;text-align:center;color:#fff;overflow:hidden;background:linear-gradient(135deg,#245be1,#0d8bf1)}.login-hero:before{content:"";position:absolute;inset:0;opacity:.7;background:linear-gradient(45deg,transparent 25%,#ffd000 25% 34%,transparent 34% 58%,#27bfc8 58% 68%,transparent 68%),radial-gradient(circle at 72% 34%,#5742dc 0 45px,transparent 46px),radial-gradient(circle at 28% 76%,#082b91 0 55px,transparent 56px)}.login-hero h1{position:relative;font-size:29px;max-width:430px;line-height:1.4;text-shadow:0 2px 4px #17448d}
 .login-panel button:disabled{background:#8ab98e;cursor:wait}.login-context{background:#eaf4ff;border:1px solid #9fc7ef;color:#173f71;padding:11px 12px;margin-bottom:12px;line-height:1.6}.login-context strong{display:block;font-size:15px}.login-state{font-weight:bold}.login-ended{background:#fff2d9;border:2px solid #d97a00;color:#7a3c00;font-weight:bold;padding:10px 12px;margin-bottom:12px}.login-error{background:#fff1f1;border:2px solid #d33;color:#8c1010;font-size:15px;font-weight:bold;padding:11px 12px;margin-bottom:12px}.login-status{min-height:22px;margin:10px 0 0;color:#fff;font-weight:bold}
 @media(max-width:760px){.frame{width:100%;margin:0}.body{display:block}.side{width:100%}.stage{padding:12px}.brand{padding:0 16px}.login-frame{width:100%;margin:0}.login-body{display:block}.login-panel{width:100%;padding:40px}.login-hero{min-height:240px}.answer-table{font-size:12px}}
@@ -966,10 +966,12 @@ WEB_SUBMIT_PAGE = templates.from_string(
     + PROGRAM_COLLECTION_CSS
     + """</style></head><body><main class="frame"><header class="brand"><strong>CSP 程序回收系统</strong><a class="logout" href="/submit/{{ seat.submit_token }}/logout">退出登录</a></header><div class="body">
 <aside class="side"><div class="seat-meta"><span>◷</span>{{ now }}</div><div class="seat-meta"><span>♟</span>{{ seat.candidate }}</div><a class="nav" href="#notice"><span class="ico">●</span>考试须知</a><a class="nav" href="/submit/{{ seat.submit_token }}/paper"><span class="ico">⬇</span>试题下载</a><a class="nav active" href="/submit/{{ seat.submit_token }}"><span class="ico">✎</span>答题</a><a class="nav" href="#messages"><span class="ico">✉</span>0条未读消息</a></aside>
-<section class="stage"><div class="card"><div class="card-title">答题</div><div class="content"><div id="notice" class="notice">请先在 NOI Linux 的正式答案目录中完成代码编写、保存、编译和自测，再点击对应题目的“递交正式文件”。系统会直接读取规定目录里的 <b>题目名.cpp</b>，可靠保存后立即以你的身份送入本场 OJ 评测；不需要再次选择文件或粘贴代码。比赛期间不会显示分数、测试点或编译结果，教师可以在 OJ 后台实时观察。允许多次递交，以截止时正式答案目录中的最终版本为准。</div>
-{% if saved %}<div class="success">{{ saved }}.cpp 已被程序回收系统接收，并将自动送入 OJ 评测；请使用“查看”核对完整内容、时间和字节数。</div>{% endif %}{% if not opened %}<div class="closed">当前不在 Hydro 比赛提交时间内，提交通道已经关闭。</div>{% endif %}
+<section class="stage"><div class="card"><div class="card-title">答题</div><div class="content"><div id="notice" class="notice">北京赛制优先使用“网页选择 .cpp 递交”：每次网页递交都会立即以你的身份送入本场 OJ 评测，该题只要成功使用过网页递交，截止时就不会再被正式答案目录覆盖。目录赛制只需把代码保存到桌面“03_答案文件夹”；如果某题整场从未网页递交，比赛截止时系统才会用正式答案目录中的 <b>题目名.cpp</b> 自动兜底。</div>
+{% if saved %}<div class="success">{{ saved }}.cpp 已被程序回收系统接收，并将自动送入 OJ 评测；请使用“查看”核对完整内容、时间和字节数。</div>{% endif %}
+{% if submit_error == 'missing_file' %}<div class="submit-error" role="alert">正式答案目录中没有找到 {{ error_problem }}.cpp。北京赛制请直接点击下方“网页选择 .cpp 递交”；目录赛制请把代码保存到桌面“03_答案文件夹/{{ error_problem }}/{{ error_problem }}.cpp”，系统会在截止时自动回收。</div>{% elif submit_error == 'read_failed' %}<div class="submit-error" role="alert">暂时无法读取 {{ error_problem }}.cpp。北京赛制可以直接使用“网页选择 .cpp 递交”。</div>{% elif submit_error == 'web_locked' %}<div class="submit-error" role="alert">{{ error_problem }} 已经使用网页递交，该题此后只接受新的网页文件，不再读取本地目录。</div>{% endif %}
+{% if not opened %}<div class="closed">当前不在 OJ 比赛提交时间内，提交通道已经关闭。</div>{% endif %}
 <p class="candidate">准考证号：{{ seat.candidate }}</p><table class="answer-table"><thead><tr><th>序号</th><th>试题名称</th><th>提交时间</th><th>内容长度</th><th>OJ送评状态</th><th>操作</th></tr></thead><tbody>
-{% for problem in problems %}{% set item = latest.get(problem) %}<tr><td>{{ loop.index }}</td><td>第 {{ loop.index }} 题：{{ problem }}</td><td>{% if item %}{{ item.created_at }}{% else %}<span class="empty">尚未递交</span>{% endif %}</td><td>{% if item %}{{ item.size }}B{% else %}0B{% endif %}</td><td>{% if not item %}<span class="empty">—</span>{% elif item.judge_state == 'submitted' %}<span class="judge-ok">已送入 OJ</span>{% elif item.judge_state in ('pending','sending') %}<span class="judge-wait">等待送评</span>{% elif item.judge_state == 'retry' %}<span class="judge-wait">送评重试中</span>{% elif item.judge_state == 'ambiguous' %}<span class="judge-error">送评结果待核对，请勿重复递交同一请求</span>{% elif item.judge_state == 'permanent_failed' %}<span class="judge-error">送评异常，教师处理中</span>{% else %}<span class="judge-local">已在本地保存</span>{% endif %}</td><td><div class="actions">{% if item %}<a class="btn btn-view" href="/submit/{{ seat.submit_token }}/view/{{ problem }}">查看</a><a class="btn btn-view" href="/submit/{{ seat.submit_token }}/download/{{ problem }}">下载源码</a>{% else %}<span class="btn btn-view btn-disabled">查看</span><span class="btn btn-view btn-disabled">下载源码</span>{% endif %}<form method="post" action="/submit/{{ seat.submit_token }}/formal/{{ problem }}"><input type="hidden" name="client_nonce" value="{{ submit_nonces[problem] }}"><button class="btn btn-submit{% if not opened %} btn-disabled{% endif %}"{% if not opened %} disabled{% endif %}>递交正式文件</button></form></div></td></tr>{% endfor %}
+{% for problem in problems %}{% set item = latest.get(problem) %}<tr><td>{{ loop.index }}</td><td>第 {{ loop.index }} 题：{{ problem }}</td><td>{% if item %}{{ item.created_at }}{% else %}<span class="empty">尚未递交</span>{% endif %}</td><td>{% if item %}{{ item.size }}B{% else %}0B{% endif %}</td><td>{% if not item %}<span class="empty">—</span>{% elif item.judge_state == 'submitted' %}<span class="judge-ok">已送入 OJ</span>{% elif item.judge_state in ('pending','sending') %}<span class="judge-wait">等待送评</span>{% elif item.judge_state == 'retry' %}<span class="judge-wait">送评重试中</span>{% elif item.judge_state == 'ambiguous' %}<span class="judge-error">送评结果待核对，请勿重复递交同一请求</span>{% elif item.judge_state == 'permanent_failed' %}<span class="judge-error">送评异常，教师处理中</span>{% else %}<span class="judge-local">已在本地保存</span>{% endif %}</td><td><div class="actions">{% if item %}<a class="btn btn-view" href="/submit/{{ seat.submit_token }}/view/{{ problem }}">查看</a><a class="btn btn-view" href="/submit/{{ seat.submit_token }}/download/{{ problem }}">下载源码</a>{% else %}<span class="btn btn-view btn-disabled">查看</span><span class="btn btn-view btn-disabled">下载源码</span>{% endif %}<a class="btn btn-submit{% if not opened %} btn-disabled{% endif %}" href="/submit/{{ seat.submit_token }}/edit/{{ problem }}">网页选择 .cpp 递交</a></div></td></tr>{% endfor %}
 </tbody></table><p id="messages" class="small">“已送入 OJ”表示 OJ 已创建评测记录并进入判题队列，不代表判题已经结束。比赛期间不会向选手显示评测结果。</p></div></div></section></div></main></body></html>"""
 )
 
@@ -977,9 +979,8 @@ WEB_EDIT_PAGE = templates.from_string(
     """<!doctype html><html><head><meta charset="utf-8"><title>提交代码 - CSP 程序回收系统</title><style>"""
     + PROGRAM_COLLECTION_CSS
     + """</style></head><body><main class="frame"><header class="brand"><strong>CSP 程序回收系统</strong><a class="logout" href="/submit/{{ seat.submit_token }}/logout">退出登录</a></header><div class="body"><aside class="side"><div class="seat-meta"><span>◷</span>{{ now }}</div><div class="seat-meta"><span>♟</span>{{ seat.candidate }}</div><a class="nav" href="/submit/{{ seat.submit_token }}#notice"><span class="ico">●</span>考试须知</a><a class="nav" href="/submit/{{ seat.submit_token }}/paper"><span class="ico">⬇</span>试题下载</a><a class="nav active" href="/submit/{{ seat.submit_token }}"><span class="ico">✎</span>答题</a><a class="nav" href="#"><span class="ico">✉</span>0条未读消息</a></aside>
-<section class="stage"><div class="card"><div class="card-title">提交代码</div><div class="content"><h2 class="edit-title">第 {{ problem_index }} 题：{{ problem }}</h2><div class="warning">从 Windows 传送代码时，优先直接上传本地 .cpp 文件；也可以粘贴完整源代码。不要使用远程桌面剪贴板传长代码。提交前检查文件开头、结尾和文件读写名称是否完整。</div>
-<form class="upload-box" method="post" enctype="multipart/form-data" action="/submit/{{ seat.submit_token }}"><input type="hidden" name="problem" value="{{ problem }}"><input type="hidden" name="client_nonce" value="{{ client_nonce }}"><input type="file" name="source" accept=".cpp,text/plain,text/x-c++src" required><button class="btn btn-primary" type="submit">上传 .cpp 文件</button></form><div class="or-divider">— 或粘贴完整源代码 —</div>
-<form method="post" action="/submit/{{ seat.submit_token }}/paste"><input type="hidden" name="problem" value="{{ problem }}"><input type="hidden" name="client_nonce" value="{{ client_nonce }}"><textarea class="codebox" name="code" spellcheck="false" required></textarea><div class="form-actions"><button class="btn btn-primary" type="submit">确认提交</button><a class="btn back" href="/submit/{{ seat.submit_token }}">取消并返回</a></div></form></div></div></section></div></main></body></html>"""
+<section class="stage"><div class="card"><div class="card-title">网页递交代码</div><div class="content"><h2 class="edit-title">第 {{ problem_index }} 题：{{ problem }}</h2><div class="warning">请选择本题完整的 <b>.cpp</b> 文件。系统会保存这一版本并立即送入 OJ；请核对题目名称、文件开头、结尾和文件读写名称。该题一旦使用网页递交，截止时将继续以最后一次网页递交为准，不再被正式答案目录覆盖。</div>
+<form class="upload-box" method="post" enctype="multipart/form-data" action="/submit/{{ seat.submit_token }}"><input type="hidden" name="problem" value="{{ problem }}"><input type="hidden" name="client_nonce" value="{{ client_nonce }}"><input type="file" name="source" accept=".cpp,text/plain,text/x-c++src" required><button class="btn btn-primary" type="submit">确认递交 .cpp</button><a class="btn back" href="/submit/{{ seat.submit_token }}">取消并返回</a></form></div></div></section></div></main></body></html>"""
 )
 
 WEB_VIEW_PAGE = templates.from_string(
@@ -991,9 +992,9 @@ WEB_VIEW_PAGE = templates.from_string(
 MODE_LABELS = {
     # Legacy database values remain readable during the V1 migration, but the
     # product exposes one submission contract only.
-    "folder": "正式答案目录 + 每次递交到 OJ",
-    "web": "正式答案目录 + 每次递交到 OJ",
-    "both": "正式答案目录 + 每次递交到 OJ",
+    "folder": "网页递交优先 + 正式目录兜底",
+    "web": "网页递交优先 + 正式目录兜底",
+    "both": "网页递交优先 + 正式目录兜底",
 }
 
 CONTEST_STATE_LABELS = {
@@ -1020,24 +1021,24 @@ form.inline{display:inline}code{background:#eef1f4;padding:2px 6px}.hint{color:#
 <form class="inline" method="post" action="/admin/shutdown"><input type="hidden" name="csrf" value="{{ csrf }}"><button>手动关机</button></form></div>
 <div class="card"><h3>登记比赛</h3><form method="post" enctype="multipart/form-data" action="/admin/register"><div class="grid">
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<label>Hydro 比赛 tid</label><input name="tid" size="28" required>
+<label>OJ 比赛编号</label><input name="tid" size="28" required>
 <label>题目映射（AI 可留空）</label><input name="files" size="64" placeholder="AI 留空自动读取；人工可填 apple=P1001,banana=P1002">
-<label>交卷规则</label><span class="hint">正式答案目录是唯一代码源；每次点击递交都会进入 OJ，截止时自动核对最终文件。</span>
+<label>交卷规则</label><span class="hint">每题网页递交优先；该题没有网页递交时，截止才使用正式答案目录兜底。</span>
 <label>备赛材料</label><select name="materials_mode"><option value="ai">AI 生成草稿，教师审核后发布</option><option value="manual">老师上传 PDF / 自测数据</option></select>
 <label>座位容量</label><span class="hint">按 OJ 已报名人数自动增加，并维持至少 2 个或报名人数 10% 的备用座位。</span>
 <label>提前发放分钟</label><input type="number" name="release_lead_minutes" min="1" max="60" value="{{ defaults.release_lead_minutes }}" required>
 <label>每题自测组数</label><input type="number" name="practice_groups" min="2" max="4" value="{{ defaults.practice_groups }}" required>
 <label>人工试题 PDF</label><input type="file" name="paper" accept="application/pdf,.pdf">
 <label>人工自测数据 ZIP</label><input type="file" name="testdata" accept="application/zip,.zip">
-</div><p class="hint">AI 模式可不填题目映射：系统按 Hydro 比赛题目顺序读取，优先采用题目 config.filename，其次安全的公开题号，最后使用 problem1、problem2；登记后会先显示最终 slug.in/out，教师确认后才克隆。AI 无需上传文件，机器校验通过后仍需教师另点批准。人工模式继续填写映射并上传 PDF；ZIP 只读下发，不收卷、不计分。</p><button>登记比赛</button></form></div>
+</div><p class="hint">AI 模式可不填题目映射：系统按 OJ 比赛题目顺序读取，优先采用题目程序名，其次安全的公开题号，最后使用 problem1、problem2；登记后会先显示最终 slug.in/out，教师确认后才克隆。AI 无需上传文件，机器校验通过后仍需教师另点批准。人工模式继续填写映射并上传 PDF；ZIP 必须为每题 2～4 组成对 .in/.out，只读下发、不收卷、不计分。</p><button>登记比赛</button></form></div>
 <div class="card"><h3>已登记比赛</h3><table><tr><th>比赛</th><th>材料</th><th>座位池</th><th>运行状态</th><th>操作</th></tr>
-{% for c in contests %}<tr><td><code>{{ c.tid }}</code><br><b>{{ c.title }}</b><br><span class="hint">正式答案目录 + 每次递交到 OJ<br>座位按报名自动增加，当前目标 {{ c.max_participants }} 正式 + {{ c.spare_seats }} 备用<br>提前 {{ c.release_lead_minutes }} 分钟发放</span></td>
-<td><span class="hint"><b>当前文件读写（生成前请确认）</b>{% for item in c.file_io_preview %}<br><code>{{ item.slug }}.in / {{ item.slug }}.out</code>{% if item.pid %} → Hydro {{ item.pid }}{% endif %}{% endfor %}</span><br>{% if c.material_state == 'approved' %}<span class="ok">已批准并冻结</span><br><code>{{ c.active_material_revision }}</code><br><span class="hint">PDF {{ c.paper_sha256[:12] }}…<br>{% if c.testdata_sha256 %}自测 {{ c.testdata_files }} 个文件{% else %}无自测数据{% endif %}</span>
+{% for c in contests %}<tr><td><code>{{ c.tid }}</code><br><b>{{ c.title }}</b><br><span class="hint">网页递交优先 + 正式目录兜底<br>座位按报名自动增加，当前目标 {{ c.max_participants }} 正式 + {{ c.spare_seats }} 备用<br>提前 {{ c.release_lead_minutes }} 分钟发放</span></td>
+<td><span class="hint"><b>当前文件读写（生成前请确认）</b>{% for item in c.file_io_preview %}<br><code>{{ item.slug }}.in / {{ item.slug }}.out</code>{% if item.pid %} → OJ 题目 {{ item.pid }}{% endif %}{% endfor %}</span><br>{% if c.material_state == 'approved' %}<span class="ok">已批准并冻结</span><br><code>{{ c.active_material_revision }}</code><br><span class="hint">PDF {{ c.paper_sha256[:12] }}…<br>{% if c.testdata_sha256 %}自测 {{ c.testdata_files }} 个文件{% else %}无自测数据{% endif %}</span>
 {% elif c.material_state == 'review' %}<span class="warn">已克隆原题为本场私有题，等待教师审核 PDF</span>{% elif c.material_state == 'draft' %}<span class="block">机器校验尚未完成，草稿不可批准</span>{% else %}<span class="block">未就绪：{{ c.material_state }}</span>{% endif %}
 {% if c.artifact_job %}<br><span class="hint">生成任务 {{ c.artifact_job.state }} / {{ c.artifact_job.progress }}%<br>{{ c.artifact_job.message or c.artifact_job.error }}{% if c.artifact_job.details.file_io_plan %}<br>已验证 {{ c.artifact_job.details.file_io_plan|length }} 道私有克隆题的文件读写{% endif %}</span>{% endif %}</td>
 <td>{% if c.pool_counts %}<span class="ok">已建立 r{{ c.pool_revision }}</span><br><span class="hint">待建 {{ c.pool_counts.get('planned',0) }} / 预热中 {{ c.pool_counts.get('warming',0) }} / 已验收 {{ c.pool_counts.get('verified',0) }} / 已预留 {{ c.pool_counts.get('reserved',0) }} / 已发放 {{ c.pool_counts.get('released',0) }}</span>{% else %}<span class="hint">尚未预热</span>{% endif %}</td>
 <td><b>{{ c.state }}</b><br><span class="hint">{{ c.message }}<br>OJ 时间最近同步：{{ c.time_sync_label or '尚未同步' }}{% if c.time_sync_error %}<br><span class="block">时间同步异常：{{ c.time_sync_error }}</span>{% endif %}</span></td><td class="actions">
-{% if c.materials_mode == 'ai' %}{% if not c.artifact_job or c.artifact_job.state in ('error','interrupted') %}<form class="inline" method="post" action="/admin/materials/generate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button onclick="return confirm('点击即表示批准：为本场创建或复用私有题副本，并改为 slug.in/out。共享原题不会修改；AI 只生成待审核草稿，仍须另行预览 PDF 和报告后批准发放。')">批准私有克隆并生成 AI 审核草稿</button></form><br><span class="hint">共享原题不改；AI 结果不会自动发放，须预览 PDF 与机器报告后另点批准。</span>{% elif c.artifact_job.state == 'done' %}<span class="hint">本场已生成过审核材料。为防止复用陈旧题面或数据指纹，不允许直接重新生成；如题目已修改，请在 Hydro 新建比赛后重新登记。</span>{% endif %}{% endif %}
+{% if c.materials_mode == 'ai' %}{% if not c.artifact_job or c.artifact_job.state in ('error','interrupted') %}<form class="inline" method="post" action="/admin/materials/generate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button onclick="return confirm('点击即表示批准：为本场创建或复用私有题副本，并改为 slug.in/out。共享原题不会修改；AI 只生成待审核草稿，仍须另行预览 PDF 和报告后批准发放。')">批准私有克隆并生成 AI 审核草稿</button></form><br><span class="hint">共享原题不改；AI 结果不会自动发放，须预览 PDF 与机器报告后另点批准。</span>{% elif c.artifact_job.state == 'done' %}<span class="hint">本场已生成过审核材料。为防止复用陈旧题面或数据指纹，不允许直接重新生成；如题目已修改，请在 OJ 新建比赛后重新登记。</span>{% endif %}{% endif %}
 {% for a in c.artifacts %}{% if a.state == 'review' %}<br><span class="hint">{{ a.revision }}：已克隆/验证 {{ a.file_io_plan|length }} 道题，待审核 PDF</span> <form class="inline" method="post" action="/admin/materials/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="revision" value="{{ a.revision }}"><button>批准 {{ a.revision }}</button></form> <a href="/admin/materials/{{ c.tid }}/{{ a.revision }}/paper" target="_blank">预览 PDF</a> <a href="/admin/materials/{{ c.tid }}/{{ a.revision }}/manifest" target="_blank">下载 manifest</a> <a href="/admin/materials/{{ c.tid }}/{{ a.revision }}/validation" target="_blank">下载机器校验报告</a>{% elif a.state == 'draft' %}<br><span class="block">{{ a.revision }} 仍是机器草稿，不可批准</span>{% endif %}{% endfor %}
 <form class="inline" method="post" action="/admin/prepare"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button {% if c.material_state != 'approved' %}disabled title="请先批准材料"{% endif %}>提前预热全部座位</button></form>
 <form class="inline" method="post" action="/admin/sync-roster"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button>同步报名名单</button></form>
@@ -1045,7 +1046,7 @@ form.inline{display:inline}code{background:#eef1f4;padding:2px 6px}.hint{color:#
 <br><form class="inline" method="post" action="/admin/pool/replace"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}"><select name="slot_no" required><option value="">选择故障座位</option>{% for s in c.pool_seats %}{% if s.state not in ('planned','frozen','collected') %}<option value="{{ s.slot_no }}">{{ '%03d'|format(s.slot_no) }} · {{ s.state }}{% if s.uname %} · {{ s.uname }}{% endif %}</option>{% endif %}{% endfor %}</select><input name="reason" maxlength="200" placeholder="故障原因（必填）" required><label><input type="checkbox" name="teacher_approved" value="yes" required>教师确认切换</label><button onclick="return confirm('确认隔离该座位，并在有学生时切换到已验收备用位？')">替换故障座位</button></form>{% for s in c.pool_seats %}{% if s.state == 'planned' and s.failure_count|int > 0 %}<form class="inline" method="post" action="/admin/pool/repair"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}"><input type="hidden" name="slot_no" value="{{ s.slot_no }}"><button onclick="return confirm('重新创建并验收座位 {{ '%03d'|format(s.slot_no) }}，恢复备用容量？')">修复备用容量 {{ '%03d'|format(s.slot_no) }}</button></form>{% endif %}{% endfor %}{% endif %}
 <form class="inline" method="post" action="/admin/collect"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button>收卷 / 失败重试</button></form>
 <a href="/admin/export/{{ c.tid }}">导出已发放座位</a>　<a target="_blank" rel="noopener" href="{{ hydro_public_base_url }}/contest/{{ c.tid }}/scoreboard?realtime=1">OJ 实时监控</a></td></tr>{% endfor %}</table>
-<p class="hint">预热阶段按 OJ 当前报名人数自动启动并逐个验收；新增报名会自动补充座位。学生每次递交都形成 OJ 记录，截止时系统核对正式答案目录并补齐最终版本。OJ 实时监控仅教师可看，OI 赛制下学生保持盲测。</p></div></body></html>"""
+<p class="hint">预热阶段按 OJ 当前报名人数自动启动并逐个验收；新增报名会自动补充座位。学生每次网页递交都形成 OJ 记录；某题从未网页递交时，截止才使用正式答案目录兜底。OJ 实时监控仅教师可看，OI 赛制下学生保持盲测。</p></div></body></html>"""
 )
 
 ADMIN_SECTIONS = {
@@ -1060,12 +1061,12 @@ ADMIN_V1_PAGE = templates.from_string(
     """<!doctype html><html><head><meta charset="utf-8"><title>{{ section_label }} · NOI Linux 考试系统</title>
 <style>*{box-sizing:border-box}body{margin:0;font-family:Arial,"Microsoft YaHei",sans-serif;background:#f4f6f9;color:#203044}.shell{max-width:1400px;margin:0 auto;padding:24px}.top{display:flex;align-items:center;justify-content:space-between}.brand{font-size:24px;font-weight:700}.sub{color:#65758b;font-size:13px}.nav{display:flex;gap:8px;margin:22px 0;flex-wrap:wrap}.nav a{padding:10px 15px;border-radius:8px;background:#fff;border:1px solid #d8e0e8;color:#29445f;text-decoration:none}.nav a.active{background:#1769aa;color:#fff;border-color:#1769aa}.card{background:#fff;border:1px solid #dce3ea;border-radius:10px;padding:18px 20px;margin:14px 0;box-shadow:0 2px 8px #dfe5eb}.grid{display:grid;grid-template-columns:180px minmax(260px,1fr);gap:7px 10px;align-items:center}.grid label{text-align:right;color:#405366}input,button,select{padding:8px;margin:3px;font-size:14px}input[type=file]{max-width:330px}button,.button{display:inline-block;border:1px solid #1769aa;background:#1769aa;color:#fff;border-radius:6px;padding:8px 12px;text-decoration:none;cursor:pointer}button.secondary,.button.secondary{background:#fff;color:#1769aa}button:disabled{border-color:#aaa;background:#ddd;color:#777;cursor:not-allowed}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #e0e6ec;padding:11px 9px;text-align:left;vertical-align:top}th{background:#f4f7fa}.hint{color:#65758b;font-size:13px;line-height:1.55}.ok{color:#087b35;font-weight:700}.warn{color:#ad6300;font-weight:700}.block{color:#b00020;font-weight:700}.pill{display:inline-block;padding:3px 8px;border-radius:12px;background:#eef3f8;margin:2px}.actions{line-height:2.8}code{background:#eef1f4;padding:2px 5px;border-radius:4px}.empty{padding:36px;text-align:center;color:#65758b}</style></head><body><main class="shell"><div class="top"><div><div class="brand">NOI Linux 考试系统</div><div class="sub">OJ 系统负责比赛与评测；这里负责标准考试桌面、程序回收和安全归档。</div></div><a class="button secondary" target="_blank" rel="noopener" href="{{ oj_base_url }}">打开 OJ 系统</a></div>
 <nav class="nav">{% for key,label in sections.items() %}<a class="{% if key == section %}active{% endif %}" href="/admin/{{ key }}">{{ label }}</a>{% endfor %}</nav>
-{% if section == 'overview' %}<section class="card"><h2>创建一场考试</h2><form method="post" enctype="multipart/form-data" action="/admin/register"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid"><label>OJ 比赛编号</label>{% if teacher_tid %}<input type="hidden" name="tid" value="{{ teacher_tid }}"><code>{{ teacher_tid }}</code>{% else %}<input name="tid" size="30" required>{% endif %}<label>程序名映射</label><input name="files" size="64" placeholder="自动生成可留空；人工材料示例 apple=P1001"><label>材料方式</label><select name="materials_mode"><option value="ai">自动生成，老师审核后发布</option><option value="manual">老师上传 PDF 和辅助数据</option></select><label>提前发放</label><input type="number" name="release_lead_minutes" min="1" max="60" value="{{ defaults.release_lead_minutes }}" required><label>每题辅助数据</label><select name="practice_groups">{% for value in (2,3,4) %}<option value="{{ value }}"{% if value == defaults.practice_groups %} selected{% endif %}>{{ value }} 组 .in/.out</option>{% endfor %}</select><label>人工试题 PDF</label><input type="file" name="paper" accept="application/pdf,.pdf"><label>人工辅助数据 ZIP</label><input type="file" name="testdata" accept="application/zip,.zip"></div><p class="hint">报名人数、正式座位和备用座位由系统自动计算。每次递交都会进入 OJ；截止时以正式答案目录中的最后版本为准。</p><button>读取比赛并创建</button></form></section>
+{% if section == 'overview' %}<section class="card"><h2>创建一场考试</h2><form method="post" enctype="multipart/form-data" action="/admin/register"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid"><label>OJ 比赛编号</label>{% if teacher_tid %}<input type="hidden" name="tid" value="{{ teacher_tid }}"><code>{{ teacher_tid }}</code>{% else %}<input name="tid" size="30" required>{% endif %}<label>程序名映射</label><input name="files" size="64" placeholder="自动生成可留空；人工材料示例 apple=P1001"><label>材料方式</label><select name="materials_mode"><option value="ai">自动生成，老师审核后发布</option><option value="manual">老师上传 PDF 和辅助数据</option></select><label>提前发放</label><input type="number" name="release_lead_minutes" min="1" max="60" value="{{ defaults.release_lead_minutes }}" required><label>每题辅助数据</label><select name="practice_groups">{% for value in (2,3,4) %}<option value="{{ value }}"{% if value == defaults.practice_groups %} selected{% endif %}>{{ value }} 组 .in/.out</option>{% endfor %}</select><label>人工试题 PDF</label><input type="file" name="paper" accept="application/pdf,.pdf"><label>人工辅助数据 ZIP</label><input type="file" name="testdata" accept="application/zip,.zip"></div><p class="hint">报名人数和座位由系统自动计算。每题网页递交优先；整场没有网页递交的题目，截止时才使用正式答案目录兜底。人工 ZIP 必须与上方选择的组数一致，且每组包含同名 .in/.out。</p><button>读取比赛并创建</button></form></section>
 <section class="card"><h2>当前比赛</h2>{% if not contests %}<div class="empty">尚未创建比赛</div>{% else %}<table><tr><th>比赛</th><th>阶段</th><th>进度</th><th>下一步</th></tr>{% for c in contests %}<tr><td><b>{{ c.title }}</b><br><code>{{ c.tid }}</code><br><span class="hint">{{ c.begin_label }} — {{ c.end_label }}</span></td><td><span class="pill">{{ c.state_label }}</span><br><span class="hint">{{ c.message }}</span></td><td>材料：{% if c.material_state == 'approved' %}<span class="ok">已发布</span>{% else %}<span class="warn">{{ c.material_state_label }}</span>{% endif %}<br>座位：{{ c.pool_bound }} 已绑定 / {{ c.pool_total }} 总数<br>递交：{{ c.delivery.counts.submitted }} 已送评</td><td>{% if c.material_state != 'approved' %}<a class="button" href="/admin/materials">审核材料</a>{% elif c.state in ('registered','error') %}<a class="button" href="/admin/seats">准备座位</a>{% elif c.state == 'ready' %}<a class="button" href="/admin/submissions">查看比赛</a>{% else %}<a class="button" href="/admin/finish">查看收卷</a>{% endif %}</td></tr>{% endfor %}</table>{% endif %}</section>
 {% elif section == 'materials' %}<section class="card"><h2>比赛材料</h2><p class="hint">系统固定生成 CSP 风格 PDF 与每题 2～4 组不计分的 .in/.out。只有 OJ 附件与学生桌面字节完全一致时，才允许进入备赛。</p>{% for c in contests %}<article class="card"><h3>{{ c.title }}</h3><p>{% for item in c.file_io_preview %}<span class="pill">{{ item.slug }}.in / {{ item.slug }}.out</span>{% endfor %}</p>{% if c.material_state == 'approved' %}<p class="ok">已发布并冻结：{{ c.active_material_revision }}</p><p class="hint">PDF {{ c.paper_sha256[:12] }}…；辅助数据 {{ c.testdata_files }} 个文件；OJ 回执 {% if c.material_publication %}{{ c.material_publication.receipt_sha256[:12] }}…{% else %}<span class="block">缺失</span>{% endif %}</p>{% else %}<p class="warn">{{ c.material_state_label }}</p>{% endif %}<div class="actions">{% if c.materials_mode == 'ai' and (not c.artifact_job or c.artifact_job.state in ('error','interrupted')) %}<form style="display:inline" method="post" action="/admin/materials/generate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button>生成待审核材料</button></form>{% endif %}{% for a in c.artifacts %}{% if a.state == 'review' %}<a class="button secondary" target="_blank" href="/admin/materials/{{ c.tid }}/{{ a.revision }}/paper">预览 PDF</a><a class="button secondary" target="_blank" href="/admin/materials/{{ c.tid }}/{{ a.revision }}/validation">查看校验报告</a><form style="display:inline" method="post" action="/admin/materials/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="revision" value="{{ a.revision }}"><button onclick="return confirm('确认 PDF、程序名和辅助数据无误，并发布到 OJ 与学生桌面？')">批准并发布</button></form>{% endif %}{% endfor %}</div></article>{% else %}<div class="empty">请先在比赛总览创建比赛</div>{% endfor %}</section>
 {% elif section == 'seats' %}<section class="card"><h2>学生座位</h2><p class="hint">报名后自动增加新座位；系统持续保留至少 2 个或报名人数 10% 的备用座位，不需要老师审核扩容。</p>{% for c in contests %}<article class="card"><h3>{{ c.title }} · {{ c.state_label }}</h3><p><span class="pill">总座位 {{ c.pool_total }}</span><span class="pill">已绑定 {{ c.pool_bound }}</span><span class="pill">已发放 {{ c.pool_counts.get('released',0) }}</span><span class="pill">已验收备用 {{ c.pool_counts.get('verified',0) }}</span></p><div class="actions">{% if c.state in ('registered','error') %}<form style="display:inline" method="post" action="/admin/prepare"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button {% if c.material_state != 'approved' %}disabled{% endif %}>运行教师测试并准备座位</button></form>{% endif %}{% if c.pool_revision is not none and c.state == 'ready' %}<form style="display:inline" method="post" action="/admin/pool/replace"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}"><select name="slot_no" required><option value="">选择故障座位</option>{% for s in c.pool_seats %}{% if s.state not in ('planned','frozen','collected') %}<option value="{{ s.slot_no }}">{{ '%03d'|format(s.slot_no) }} · {{ s.state }}{% if s.uname %} · {{ s.uname }}{% endif %}</option>{% endif %}{% endfor %}</select><input name="reason" maxlength="200" placeholder="故障原因" required><input type="hidden" name="teacher_approved" value="yes"><button onclick="return confirm('确认隔离故障座位并自动切换到备用位？')">替换故障座位</button></form>{% for s in c.pool_seats %}{% if s.state == 'planned' and s.failure_count|int > 0 %}<form style="display:inline" method="post" action="/admin/pool/repair"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="expected_revision" value="{{ c.pool_revision }}"><input type="hidden" name="slot_no" value="{{ s.slot_no }}"><button onclick="return confirm('重新创建并验收座位 {{ '%03d'|format(s.slot_no) }}，恢复备用容量？')">修复备用容量 {{ '%03d'|format(s.slot_no) }}</button></form>{% endif %}{% endfor %}{% endif %}<a class="button secondary" href="/admin/export/{{ c.tid }}">下载座位状态</a></div></article>{% else %}<div class="empty">暂无座位</div>{% endfor %}</section>
 {% elif section == 'submissions' %}<section class="card"><h2>递交与评测</h2><p class="hint">老师在 OJ 系统查看源码、每次评测与实时分数。本页只显示送达状态，不展示或导出学生密码。</p>{% for c in contests %}<article class="card"><h3>{{ c.title }}</h3><p><span class="pill">已送评 {{ c.delivery.counts.submitted }}</span><span class="pill">等待 {{ c.delivery.counts.pending + c.delivery.counts.sending }}</span><span class="pill">重试 {{ c.delivery.counts.retry }}</span><span class="pill">待核对 {{ c.delivery.counts.ambiguous }}</span><span class="pill">异常 {{ c.delivery.counts.permanent_failed }}</span></p><p><span class="pill">入口通知已送达 {{ c.notifications.counts.sent }}</span><span class="pill">通知待处理 {{ c.notifications.counts.pending + c.notifications.counts.retry }}</span><span class="pill">通知异常 {{ c.notifications.counts.permanent_failed }}</span></p>{% if c.delivery.safe and c.notifications.safe %}<p class="ok">递交与通知队列正常</p>{% else %}<p class="block">存在待处理、待核对或异常项目，系统不会自动重发不确定递交，也不会静默结束比赛。</p>{% endif %}{% if c.notifications.counts.permanent_failed %}<form class="inline" method="post" action="/admin/notifications/retry"><input type="hidden" name="tid" value="{{ c.tid }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button>重试失败通知</button></form>{% endif %}<a class="button" target="_blank" rel="noopener" href="{{ oj_base_url }}/contest/{{ c.tid }}/scoreboard?realtime=1">在 OJ 系统查看比赛</a></article>{% else %}<div class="empty">暂无比赛</div>{% endfor %}</section>
-{% elif section == 'finish' %}<section class="card"><h2>结束与归档</h2><p class="hint">OJ 时间是唯一比赛时间。截止后系统冻结正式答案目录、补齐最后版本、等待评测队列清空并生成归档；只有证据完整才会安全关机。</p>{% for c in contests %}<article class="card"><h3>{{ c.title }} · {{ c.state_label }}</h3><p>收卷证据：{% if c.collection_receipt_sha256 %}<span class="ok">{{ c.collection_receipt_sha256[:12] }}…</span>{% else %}<span class="warn">尚未生成</span>{% endif %}<br>安全关机：{% if c.shutdown_verified_at_ms %}<span class="ok">已核验</span>{% elif c.shutdown_after_ms %}<span class="warn">等待保护期结束</span>{% else %}<span class="hint">尚未进入关机阶段</span>{% endif %}</p><form method="post" action="/admin/collect"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button onclick="return confirm('只在需要提前结束或自动收卷失败时使用。确认现在开始收卷？')">提前结束 / 重试收卷</button></form>{% if not c.delivery.safe %}<p class="block">递交队列尚未清空，禁止关机。</p>{% endif %}</article>{% else %}<div class="empty">暂无归档</div>{% endfor %}</section>{% endif %}
+{% elif section == 'finish' %}<section class="card"><h2>结束与归档</h2><p class="hint">OJ 时间是唯一比赛时间。截止后系统先确认最后一次网页递交，再仅为从未网页递交的题目读取正式答案目录兜底；随后等待评测队列清空并生成归档，证据完整后进入 30 分钟保护期并安全关机。</p>{% for c in contests %}<article class="card"><h3>{{ c.title }} · {{ c.state_label }}</h3><p>收卷证据：{% if c.collection_receipt_sha256 %}<span class="ok">{{ c.collection_receipt_sha256[:12] }}…</span>{% else %}<span class="warn">尚未生成</span>{% endif %}<br>安全关机：{% if c.shutdown_verified_at_ms %}<span class="ok">已核验</span>{% elif c.shutdown_after_ms %}<span class="warn">等待保护期结束</span>{% else %}<span class="hint">尚未进入关机阶段</span>{% endif %}</p><form method="post" action="/admin/collect"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="tid" value="{{ c.tid }}"><button onclick="return confirm('只在需要提前结束或自动收卷失败时使用。确认现在开始收卷？')">提前结束 / 重试收卷</button></form>{% if not c.delivery.safe %}<p class="block">递交队列尚未清空，禁止关机。</p>{% endif %}</article>{% else %}<div class="empty">暂无归档</div>{% endfor %}</section>{% endif %}
 </main></body></html>"""
 )
 
@@ -1171,7 +1172,7 @@ def student_query(uname: str = Form(...), password: str = Form(...)):
                         "uname": uname,
                         "url": url,
                         "vnc_pass": seat["vnc_pass"],
-                        "mode_label": "正式答案目录 + 每次递交到 OJ",
+                        "mode_label": "网页递交优先 + 正式目录兜底",
                         "web_submit_url": web_submit_url(seat["submit_token"]),
                     },
                     error=None,
@@ -1269,11 +1270,16 @@ def _submit_cookie_value(token: str) -> str:
     return hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
-def _submit_cookie_secure() -> bool:
-    public_base_url = str(
-        cfg["orchestrator"].get("public_base_url", "")
-    ).strip()
-    return urlsplit(public_base_url).scheme.lower() == "https"
+def _submit_cookie_secure(request: Request) -> bool:
+    """Match the cookie transport flag to the URL visible to the browser.
+
+    Student desktops reach the submit service through an HTTP-only gateway,
+    while the public fallback uses HTTPS. Basing this flag on the configured
+    public URL makes browsers reject the cookie on the private HTTP gateway.
+    """
+    if request.headers.get("x-noi-submit-transport", "").lower() == "private-http":
+        return False
+    return request.url.scheme.lower() == "https"
 
 
 def _submit_authenticated(request: Request, token: str) -> bool:
@@ -1400,7 +1406,12 @@ def _enqueue_web_source(
 
 @app.get("/submit/{token}", response_class=HTMLResponse)
 def web_submit_page(
-    request: Request, token: str, saved: str = "", login: str = ""
+    request: Request,
+    token: str,
+    saved: str = "",
+    login: str = "",
+    error: str = "",
+    problem: str = "",
 ):
     seat, contest, problems, latest = _web_submit_context(token)
     if not _submit_authenticated(request, token):
@@ -1419,6 +1430,10 @@ def web_submit_page(
             latest=latest,
             opened=_submission_window_open(contest),
             saved=saved if saved in problems else "",
+            submit_error=error
+            if error in {"missing_file", "read_failed", "web_locked"}
+            else "",
+            error_problem=problem if problem in problems else "",
             mode_label=MODE_LABELS.get(contest["submission_mode"], ""),
             submit_nonces={
                 problem: RealtimeJudge.new_client_nonce() for problem in problems
@@ -1435,11 +1450,17 @@ def web_submit_formal_file(
     problem: str,
     client_nonce: str = Form(...),
 ):
-    seat, contest, problems, _ = _web_submit_context(token)
+    seat, contest, problems, latest = _web_submit_context(token)
     if not _submit_authenticated(request, token):
         return _submit_login_redirect(token)
     if problem not in problems:
         raise HTTPException(400, "题目名称不属于本场比赛")
+    if problem in latest:
+        # Retained only for already-open legacy pages. Once a candidate used
+        # web upload for this problem, a folder read must never replace it.
+        return RedirectResponse(
+            f"/submit/{token}?error=web_locked&problem={problem}", status_code=303
+        )
     if not _submission_window_open(contest):
         raise HTTPException(409, "当前不在 OJ 比赛递交时间内")
     maximum = int(cfg["orchestrator"].get("web_submit_max_bytes", 102400))
@@ -1451,7 +1472,15 @@ def web_submit_formal_file(
             maximum_bytes=maximum,
         )
     except (RuntimeError, ValueError) as exc:
-        raise HTTPException(409, f"无法读取正式文件：{exc}") from exc
+        detail = str(exc)
+        error = (
+            "missing_file"
+            if "No such file or directory" in detail or "不存在" in detail
+            else "read_failed"
+        )
+        return RedirectResponse(
+            f"/submit/{token}?error={error}&problem={problem}", status_code=303
+        )
     normalized = _normalize_uploaded_source(payload, maximum)
     _enqueue_web_source(seat, contest, problem, normalized, client_nonce)
     return RedirectResponse(f"/submit/{token}?saved={problem}", status_code=303)
@@ -1459,6 +1488,7 @@ def web_submit_formal_file(
 
 @app.post("/submit/{token}/login", response_class=HTMLResponse)
 def web_submit_login(
+    request: Request,
     token: str,
     candidate: str = Form(...),
     password: str = Form(...),
@@ -1484,7 +1514,7 @@ def web_submit_login(
         path=f"/submit/{token}",
         httponly=True,
         samesite="strict",
-        secure=_submit_cookie_secure(),
+        secure=_submit_cookie_secure(request),
     )
     return response
 
@@ -1522,7 +1552,17 @@ def web_submit_edit(request: Request, token: str, problem: str):
         return _submit_login_redirect(token)
     if problem not in problems:
         raise HTTPException(404, "题目名称不属于本场比赛")
-    return RedirectResponse(f"/submit/{token}", status_code=303)
+    if not _submission_window_open(contest):
+        raise HTTPException(409, "当前不在 OJ 比赛递交时间内")
+    return _web_submit_response(
+        WEB_EDIT_PAGE.render(
+            seat=seat,
+            problem=problem,
+            problem_index=problems.index(problem) + 1,
+            client_nonce=RealtimeJudge.new_client_nonce(),
+            now=datetime.now().strftime("%H:%M:%S"),
+        )
+    )
 
 
 @app.get("/submit/{token}/view/{problem}", response_class=HTMLResponse)
@@ -1568,13 +1608,20 @@ def web_submit_code(
     client_nonce: str = Form(...),
     source: UploadFile = File(...),
 ):
-    _, _, _, _ = _web_submit_context(token)
+    seat, contest, problems, _ = _web_submit_context(token)
     if not _submit_authenticated(request, token):
         return _submit_login_redirect(token)
-    raise HTTPException(
-        410,
-        "旧上传入口已停用；请返回程序回收系统，点击“递交正式文件”",
-    )
+    if problem not in problems:
+        raise HTTPException(400, "题目名称不属于本场比赛")
+    if not _submission_window_open(contest):
+        raise HTTPException(409, "当前不在 OJ 比赛递交时间内")
+    if not (source.filename or "").lower().endswith(".cpp"):
+        raise HTTPException(400, "请选择 .cpp 源代码文件")
+    maximum = int(cfg["orchestrator"].get("web_submit_max_bytes", 102400))
+    payload = source.file.read(maximum + 1)
+    normalized = _normalize_uploaded_source(payload, maximum)
+    _enqueue_web_source(seat, contest, problem, normalized, client_nonce)
+    return RedirectResponse(f"/submit/{token}?saved={problem}", status_code=303)
 
 
 @app.post("/submit/{token}/paste")
@@ -1590,7 +1637,7 @@ def web_submit_paste(
         return _submit_login_redirect(token)
     raise HTTPException(
         410,
-        "旧粘贴入口已停用；请返回程序回收系统，点击“递交正式文件”",
+        "旧粘贴入口已停用；请返回程序回收系统，点击“网页选择 .cpp 递交”",
     )
 
 
@@ -2089,6 +2136,7 @@ def admin_register(
                 ),
                 int(cfg["orchestrator"].get("testdata_max_files", 1000)),
                 file_list,
+                int(practice_groups),
             )
         except MaterialError as exc:
             status_code = 413 if "超过" in str(exc) else 400
