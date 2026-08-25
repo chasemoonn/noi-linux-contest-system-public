@@ -224,9 +224,12 @@ for problem in "${problems[@]}"; do
     sample_target="${ANSWER_DIR}/${problem}/${problem}.in"
     if [[ "${HAS_TEST_DATA}" == "1" \
         && ! -e "${sample_target}" && ! -L "${sample_target}" ]]; then
-        sample_source="$(find "${HOME_DIR}/测试数据/${problem}" \
-            -maxdepth 1 -type f -name '*.in' -print 2>/dev/null \
-            | LC_ALL=C sort | head -n 1)"
+        sample_source=""
+        if [[ -d "${HOME_DIR}/测试数据/${problem}" ]]; then
+            sample_source="$(find "${HOME_DIR}/测试数据/${problem}" \
+                -maxdepth 1 -type f -name '*.in' -print \
+                | LC_ALL=C sort | head -n 1)"
+        fi
         if [[ -n "${sample_source}" ]]; then
             install -o "${USER_NAME}" -g "${USER_NAME}" -m 0644 \
                 "${sample_source}" "${sample_target}"

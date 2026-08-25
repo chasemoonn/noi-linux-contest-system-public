@@ -38,6 +38,15 @@ class StudentDesktopContractTests(unittest.TestCase):
                 self.assertIn(marker, self.entrypoint)
         self.assertNotIn('> "${source_target}"', self.entrypoint)
 
+    def test_missing_optional_sample_directory_does_not_abort_desktop(self):
+        directory_guard = self.entrypoint.index(
+            'if [[ -d "${HOME_DIR}/测试数据/${problem}" ]]'
+        )
+        sample_search = self.entrypoint.index(
+            'sample_source="$(find "${HOME_DIR}/测试数据/${problem}"'
+        )
+        self.assertLess(directory_guard, sample_search)
+
     def test_start_answer_launcher_opens_canonical_files_in_geany(self):
         for marker in (
             "03_开始答题.desktop",

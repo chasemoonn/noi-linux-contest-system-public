@@ -123,15 +123,20 @@ seat_root="${test_root}/v1"
 install -d -m 0755 \
     "${seat_root}/answers" \
     "${seat_root}/materials" \
-    "${seat_root}/testdata/apple"
+    "${seat_root}/testdata/apple" \
+    "${seat_root}/testdata/banana"
 base64 -d > "${seat_root}/materials/paper.pdf" <<'PDF_BASE64'
 JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAzMDAgMTQ0XSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTMgPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiAzNiA4MCBUZCAoTk9JIGltYWdlIHZlcmlmaWNhdGlvbikgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA2NCAwMDAwMCBuIAowMDAwMDAwMTIxIDAwMDAwIG4gCjAwMDAwMDAyNDcgMDAwMDAgbiAKMDAwMDAwMDMxNyAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQxOQolJUVPRgo=
 PDF_BASE64
 printf '1 2\n' > "${seat_root}/testdata/apple/1.in"
 printf '3\n' > "${seat_root}/testdata/apple/1.out"
+printf '4 5\n' > "${seat_root}/testdata/banana/1.in"
+printf '9\n' > "${seat_root}/testdata/banana/1.out"
 chmod 0444 "${seat_root}/materials/paper.pdf" \
     "${seat_root}/testdata/apple/1.in" \
-    "${seat_root}/testdata/apple/1.out"
+    "${seat_root}/testdata/apple/1.out" \
+    "${seat_root}/testdata/banana/1.in" \
+    "${seat_root}/testdata/banana/1.out"
 
 docker run -d --name "${container_name}" \
     --memory 2560m --memory-swap 2560m --cpus 1.5 \
