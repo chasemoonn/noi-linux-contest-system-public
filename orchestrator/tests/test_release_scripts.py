@@ -129,6 +129,8 @@ class ReleaseScriptSafetyTests(unittest.TestCase):
             "candidate desktop container exited before becoming ready",
             "candidate desktop finalizer failed",
             "docker logs --tail 120",
+            "restart-preservation-sentinel",
+            "banana.before-restart/banana.cpp",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, verify)

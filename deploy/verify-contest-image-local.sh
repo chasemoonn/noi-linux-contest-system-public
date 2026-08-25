@@ -305,11 +305,14 @@ docker exec -u student -e HOME=/home/student "${container_name}" \
 # root entrypoint preserves conflicting paths, recreates real managed parent
 # directories, and refuses to follow a problem-directory symlink.
 docker exec -u student -e HOME=/home/student "${container_name}" sh -lc '
+    printf "// restart-preservation-sentinel\n" \
+        > "$HOME/答案/BJ0001/apple/apple.cpp"
     for path in .config .vnc Desktop; do
         mv -- "$HOME/${path}" "$HOME/${path}.before-restart"
         ln -s "$HOME/答案" "$HOME/${path}"
     done
-    rmdir "$HOME/答案/BJ0001/banana"
+    mv -- "$HOME/答案/BJ0001/banana" \
+        "$HOME/答案/BJ0001/banana.before-restart"
     ln -s "$HOME/答案/BJ0001/apple" "$HOME/答案/BJ0001/banana"
 '
 docker restart "${container_name}" >/dev/null
@@ -333,6 +336,11 @@ docker exec "${container_name}" test -d '/home/student/答案/BJ0001/banana'
 docker exec "${container_name}" test ! -L '/home/student/答案/BJ0001/banana'
 docker exec "${container_name}" test -L \
     '/home/student/答案/BJ0001/banana.student-backup'
+docker exec "${container_name}" grep -Fqx \
+    '// restart-preservation-sentinel' \
+    '/home/student/答案/BJ0001/apple/apple.cpp'
+docker exec "${container_name}" test -f \
+    '/home/student/答案/BJ0001/banana.before-restart/banana.cpp'
 docker exec "${container_name}" test -L \
     '/home/student/比赛资料（从这里开始）'
 docker exec "${container_name}" test -L \
