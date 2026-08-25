@@ -149,6 +149,12 @@ docker run -d --name "${container_name}" \
 for _attempt in $(seq 1 90); do
     ready=0
     for name in "${containers[@]}"; do
+        if [[ "$(docker inspect "${name}" --format '{{.State.Running}}')" \
+            != true ]]; then
+            echo "candidate desktop container exited before becoming ready: ${name}" >&2
+            docker logs --tail 120 "${name}" >&2 || true
+            exit 1
+        fi
         if docker exec "${name}" grep -Fqx ready \
             /home/student/.contest-finalizer-status >/dev/null 2>&1 \
             && docker exec "${name}" pgrep -x gnome-shell >/dev/null 2>&1 \

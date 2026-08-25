@@ -83,6 +83,7 @@ if ! id "${USER_NAME}" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "${USER_NAME}"
 fi
 printf '%s:%s\n' "${USER_NAME}" "${PASS}" | chpasswd
+chown "${USER_NAME}:${USER_NAME}" "${HOME_DIR}"
 
 ensure_real_directory "${HOME_DIR}/.vnc" "${USER_NAME}" "${USER_NAME}" 0700
 prepare_managed_path "${HOME_DIR}/.vnc/passwd"
@@ -112,6 +113,11 @@ chmod 0755 "${HOME_DIR}/.vnc/xstartup"
 
 ensure_real_directory "${HOME_DIR}/Desktop" "${USER_NAME}" "${USER_NAME}" 0755
 ensure_real_directory "${HOME_DIR}/.config" "${USER_NAME}" "${USER_NAME}" 0755
+ensure_real_directory "${HOME_DIR}/.cache" "${USER_NAME}" "${USER_NAME}" 0700
+ensure_real_directory "${HOME_DIR}/.cache/dconf" \
+    "${USER_NAME}" "${USER_NAME}" 0700
+ensure_real_directory "${HOME_DIR}/.cache/gvfs" \
+    "${USER_NAME}" "${USER_NAME}" 0700
 ensure_real_directory "${HOME_DIR}/.config/autostart" \
     "${USER_NAME}" "${USER_NAME}" 0755
 ensure_real_directory "${HOME_DIR}/.config/geany" \

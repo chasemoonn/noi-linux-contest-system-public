@@ -60,6 +60,23 @@ class StudentDesktopContractTests(unittest.TestCase):
                 self.assertIn(marker, self.entrypoint)
         self.assertNotIn("ibus-daemon --daemonize --replace", self.entrypoint)
 
+    def test_official_home_cache_is_student_writable_before_gsettings(self):
+        cache = self.entrypoint.index(
+            'ensure_real_directory "${HOME_DIR}/.cache"'
+        )
+        dconf = self.entrypoint.index(
+            'ensure_real_directory "${HOME_DIR}/.cache/dconf"'
+        )
+        input_setting = self.entrypoint.index(
+            'gsettings set com.github.libpinyin.ibus-libpinyin.libpinyin'
+        )
+        self.assertLess(cache, input_setting)
+        self.assertLess(dconf, input_setting)
+        self.assertIn(
+            'chown "${USER_NAME}:${USER_NAME}" "${HOME_DIR}"',
+            self.entrypoint,
+        )
+
     def test_student_instructions_state_web_first_per_problem_fallback(self):
         for marker in (
             "北京赛制优先使用网页递交",
