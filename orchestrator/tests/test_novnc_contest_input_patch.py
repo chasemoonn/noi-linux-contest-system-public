@@ -55,10 +55,38 @@ class NoVNCContestInputPatchTests(unittest.TestCase):
         patched = self.patcher.patch_keyboard(source)
         self.assertIn("_releaseStaleModifier(codes, pressed)", patched)
         self.assertIn("syncModifiers(e)", patched)
+        self.assertIn("contestSyncModifiers", patched)
         self.assertIn("e.shiftKey", patched)
         self.assertIn("e.ctrlKey", patched)
         self.assertIn("e.altKey", patched)
         self.assertIn("e.metaKey", patched)
+        self.assertIn("delete this._keyDownList[code]", patched)
+        self.assertEqual(self.patcher.patch_keyboard(patched), patched)
+
+    def test_modifier_patch_supports_official_focal_novnc_prototype_source(self):
+        source = """Keyboard.prototype = {
+    // ===== PRIVATE METHODS =====
+
+    _allKeysUp: function () {
+    },
+
+    // ===== PUBLIC METHODS =====
+
+    grab: function () {
+    },
+
+    ungrab: function () {
+    },
+};
+"""
+        patched = self.patcher.patch_keyboard(source)
+        self.assertIn(
+            "_releaseStaleModifier: function (codes, pressed)", patched
+        )
+        self.assertIn("syncModifiers: function (e)", patched)
+        self.assertIn("contestSyncModifiers", patched)
+        self.assertIn("delete this._keyDownList[code]", patched)
+        self.assertNotIn("_interruptAltGrSequence", patched)
         self.assertEqual(self.patcher.patch_keyboard(patched), patched)
 
     def test_mouse_down_synchronizes_modifiers_before_forwarding_click(self):
@@ -70,10 +98,34 @@ class NoVNCContestInputPatchTests(unittest.TestCase):
                                   this._canvas);
 """
         patched = self.patcher.patch_rfb(source)
-        sync = patched.index("this._keyboard.syncModifiers(ev)")
+        sync = patched.index("contestSyncModifiersFromMouse")
         position = patched.index("let pos = clientToElement")
         self.assertLess(sync, position)
         self.assertEqual(self.patcher.patch_rfb(patched), patched)
+
+    def test_official_focal_mouse_event_is_forwarded_to_legacy_rfb(self):
+        rfb_source = """RFB.prototype = {
+    _handleMouseButton: function (x, y, down, bmask) {
+        this._mouse_buttonMask = bmask;
+    },
+};
+"""
+        mouse_source = """        Log.Debug("onmousebutton");
+        this.onmousebutton(pos.x, pos.y, down, bmask);
+
+        stopEvent(e);
+"""
+        patched_rfb = self.patcher.patch_rfb(rfb_source)
+        patched_mouse = self.patcher.patch_legacy_mouse(mouse_source)
+        self.assertIn("contestLegacyModifierEvent", patched_rfb)
+        self.assertIn("down && e", patched_rfb)
+        self.assertIn("this._keyboard.syncModifiers(e)", patched_rfb)
+        self.assertIn("contestModifierEvent", patched_mouse)
+        self.assertIn("down, bmask, e", patched_mouse)
+        self.assertEqual(self.patcher.patch_rfb(patched_rfb), patched_rfb)
+        self.assertEqual(
+            self.patcher.patch_legacy_mouse(patched_mouse), patched_mouse
+        )
 
     def test_unfamiliar_source_fails_closed(self):
         with self.assertRaisesRegex(RuntimeError, "unexpected noVNC"):
@@ -86,7 +138,7 @@ class NoVNCContestInputPatchTests(unittest.TestCase):
         for marker in (
             "patch-novnc-contest-input.py",
             "contestNumpadKeys",
-            "syncModifiers(e)",
+            "contestSyncModifiers",
             "numpad-and-stale-modifier-v1",
         ):
             with self.subTest(marker=marker):

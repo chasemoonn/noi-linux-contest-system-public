@@ -231,10 +231,15 @@ for name in "${containers[@]}"; do
         '/home/student/.config/geany/filedefs/filetypes.cpp'
     docker exec "${name}" grep -Fq 'contestNumpadKeys' \
         '/usr/share/novnc/core/input/util.js'
-    docker exec "${name}" grep -Fq 'syncModifiers(e)' \
+    docker exec "${name}" grep -Fq 'contestSyncModifiers' \
         '/usr/share/novnc/core/input/keyboard.js'
-    docker exec "${name}" grep -Fq 'this._keyboard.syncModifiers(ev)' \
+    docker exec "${name}" grep -Fq 'contestSyncModifiersFromMouse' \
         '/usr/share/novnc/core/rfb.js'
+    if docker exec "${name}" grep -Fq 'contestLegacyModifierEvent' \
+        '/usr/share/novnc/core/rfb.js'; then
+        docker exec "${name}" grep -Fq 'contestModifierEvent' \
+            '/usr/share/novnc/core/input/mouse.js'
+    fi
     docker exec -u student "${name}" test ! -w \
         '/home/student/试题/paper.pdf'
     docker exec -u student "${name}" test ! -w \

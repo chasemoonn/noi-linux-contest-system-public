@@ -122,7 +122,9 @@ class ReleaseScriptSafetyTests(unittest.TestCase):
             "${problem}/${problem}.cpp",
             'EX_00_CM="./%e"',
             "contestNumpadKeys",
-            "syncModifiers(e)",
+            "contestSyncModifiers",
+            "contestSyncModifiersFromMouse",
+            "contestModifierEvent",
             "canonical-source-and-geany-run-v2",
         ):
             with self.subTest(marker=marker):

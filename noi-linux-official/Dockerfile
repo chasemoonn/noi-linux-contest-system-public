@@ -63,8 +63,10 @@ RUN python3 /usr/local/bin/install-firefox-cookie-policy.py
 # translations; the official NOI Linux desktop and applications stay intact.
 RUN python3 /usr/local/bin/patch-novnc-contest-input.py \
  && grep -Fq 'contestNumpadKeys' /usr/share/novnc/core/input/util.js \
- && grep -Fq 'syncModifiers(e)' /usr/share/novnc/core/input/keyboard.js \
- && grep -Fq 'this._keyboard.syncModifiers(ev)' /usr/share/novnc/core/rfb.js
+ && grep -Fq 'contestSyncModifiers' /usr/share/novnc/core/input/keyboard.js \
+ && grep -Fq 'contestSyncModifiersFromMouse' /usr/share/novnc/core/rfb.js \
+ && { ! grep -Fq 'contestLegacyModifierEvent' /usr/share/novnc/core/rfb.js \
+      || grep -Fq 'contestModifierEvent' /usr/share/novnc/core/input/mouse.js; }
 
 # Keep the mutable source identity after all expensive filesystem layers.
 # A new audited source revision must change the immutable image identity, but
