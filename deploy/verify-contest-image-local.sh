@@ -75,6 +75,19 @@ if [[ "${image_contract}" != "${expected_desktop_contract}" ]]; then
     echo "镜像不支持桌面就绪契约 ${expected_desktop_contract}" >&2
     exit 1
 fi
+for label_and_value in \
+    'org.noi.desktop.input-fidelity=ibus-explicit-switch-v2' \
+    'org.noi.desktop.keyboard-fidelity=numpad-and-stale-modifier-v1' \
+    'org.noi.desktop.student-ux=canonical-source-and-geany-run-v2'; do
+    label="${label_and_value%%=*}"
+    expected="${label_and_value#*=}"
+    actual="$(docker image inspect "${image_id}" \
+        --format "{{index .Config.Labels \"${label}\"}}")"
+    if [[ "${actual}" != "${expected}" ]]; then
+        echo "镜像桌面契约标签不匹配: ${label}" >&2
+        exit 1
+    fi
+done
 image_source_revision="$(docker image inspect "${image_id}" \
     --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
 if [[ ! "${image_source_revision}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -188,6 +201,7 @@ for name in "${containers[@]}"; do
     for entry in \
         '01_比赛题面.pdf' \
         '02_辅助自测数据' \
+        '03_开始答题.desktop' \
         '03_答案文件夹' \
         '04_CSP程序回收系统.html' \
         '05_使用说明.txt'; do
@@ -201,6 +215,26 @@ for name in "${containers[@]}"; do
         '/home/student/答案/BJ0001/apple'
     docker exec -u student "${name}" test -w \
         '/home/student/答案/BJ0001/banana'
+    for problem in apple banana; do
+        docker exec "${name}" test -f \
+            "/home/student/答案/BJ0001/${problem}/${problem}.cpp"
+        docker exec "${name}" test ! -L \
+            "/home/student/答案/BJ0001/${problem}/${problem}.cpp"
+        docker exec -u student "${name}" test -w \
+            "/home/student/答案/BJ0001/${problem}/${problem}.cpp"
+    done
+    docker exec "${name}" test -x \
+        '/run/contest-materials/03_开始答题.sh'
+    docker exec "${name}" grep -Fq 'exec geany --new-instance' \
+        '/run/contest-materials/03_开始答题.sh'
+    docker exec "${name}" grep -Fq 'EX_00_CM="./%e"' \
+        '/home/student/.config/geany/filedefs/filetypes.cpp'
+    docker exec "${name}" grep -Fq 'contestNumpadKeys' \
+        '/usr/share/novnc/core/input/util.js'
+    docker exec "${name}" grep -Fq 'syncModifiers(e)' \
+        '/usr/share/novnc/core/input/keyboard.js'
+    docker exec "${name}" grep -Fq 'this._keyboard.syncModifiers(ev)' \
+        '/usr/share/novnc/core/rfb.js'
     docker exec -u student "${name}" test ! -w \
         '/home/student/试题/paper.pdf'
     docker exec -u student "${name}" test ! -w \
@@ -283,6 +317,7 @@ docker exec "${container_name}" test -L \
 for entry in \
     '01_比赛题面.pdf' \
     '02_辅助自测数据' \
+    '03_开始答题.desktop' \
     '03_答案文件夹' \
     '04_CSP程序回收系统.html' \
     '05_使用说明.txt'; do

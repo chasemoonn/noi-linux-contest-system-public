@@ -94,6 +94,10 @@ class ReleaseScriptSafetyTests(unittest.TestCase):
             '--build-arg "NOI_SOURCE_REVISION=${source_revision}"', deploy
         )
         self.assertIn(
+            '--build-arg "NOI_ISO_SHA256=${expected_iso_sha256}"', deploy
+        )
+        self.assertIn('rootfs_sha256="${rootfs_sha256,,}"', deploy)
+        self.assertIn(
             '"${iso_path}" "${candidate}" "${source_revision}"', deploy
         )
         self.assertIn(
@@ -112,6 +116,17 @@ class ReleaseScriptSafetyTests(unittest.TestCase):
             '"${image_source_revision}" != "${expected_source_revision}"', verify
         )
         self.assertIn('docker image inspect "${image_id}"', verify)
+        for marker in (
+            "03_开始答题.desktop",
+            "for problem in apple banana",
+            "${problem}/${problem}.cpp",
+            'EX_00_CM="./%e"',
+            "contestNumpadKeys",
+            "syncModifiers(e)",
+            "canonical-source-and-geany-run-v2",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, verify)
 
     def test_desktop_finalizer_publishes_transitional_and_failed_states(self):
         finalizer = (

@@ -250,10 +250,12 @@ bash -n deploy/verify-contest-image-local.sh
 
 rootfs_sha256="$(docker image inspect noi-linux-official-rootfs:2.0 \
   --format '{{index .Config.Labels "org.noi.iso.sha256"}}' 2>/dev/null || true)"
+rootfs_sha256="${rootfs_sha256,,}"
 if [[ "${rootfs_sha256}" == "${expected_iso_sha256}" ]]; then
   docker build --build-arg NOI_ROOTFS_IMAGE=noi-linux-official-rootfs:2.0 \
     --build-arg APT_MIRROR=mirrors.cloud.aliyuncs.com \
     --build-arg "NOI_SOURCE_REVISION=${source_revision}" \
+    --build-arg "NOI_ISO_SHA256=${expected_iso_sha256}" \
     -t "${candidate}" noi-linux-official
 else
   echo "缓存 rootfs 缺少匹配的官方 ISO 标签，重新从 ISO 构建候选镜像"
