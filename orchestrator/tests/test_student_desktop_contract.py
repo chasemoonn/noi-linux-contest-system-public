@@ -58,6 +58,7 @@ class StudentDesktopContractTests(unittest.TestCase):
                 self.assertIn(marker, self.entrypoint)
         desktop_config = DESKTOP_CONFIG.read_text(encoding="utf-8")
         self.assertIn("03_开始答题.desktop", desktop_config)
+        self.assertIn('if [[ ! -L "$launcher" ]]', desktop_config)
 
     def test_geany_execute_and_explicit_input_switch_are_configured(self):
         for marker in (

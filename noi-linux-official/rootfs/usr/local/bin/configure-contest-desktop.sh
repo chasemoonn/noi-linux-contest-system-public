@@ -27,6 +27,11 @@ for launcher in \
     "$HOME/Desktop/CSP 程序回收系统.desktop" \
     "$HOME/Desktop/03_开始答题.desktop"; do
     [[ -f "$launcher" ]] || continue
-    chmod 0755 "$launcher"
+    # Managed launchers are symlinks to the root-owned read-only contest
+    # bundle and are already executable. Only legacy student-owned launchers
+    # need a local mode correction here.
+    if [[ ! -L "$launcher" ]]; then
+        chmod 0755 "$launcher"
+    fi
     gio set "$launcher" metadata::trusted true || true
 done
