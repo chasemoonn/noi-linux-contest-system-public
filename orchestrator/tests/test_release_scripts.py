@@ -127,6 +127,7 @@ class ReleaseScriptSafetyTests(unittest.TestCase):
             "contestModifierEvent",
             "canonical-source-and-geany-run-v2",
             "candidate desktop container exited before becoming ready",
+            "candidate desktop finalizer failed",
             "docker logs --tail 120",
         ):
             with self.subTest(marker=marker):

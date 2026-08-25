@@ -43,11 +43,17 @@ for _attempt in $(seq 1 40); do
     all_trusted=1
     for launcher in "${HOME}/Desktop/"*.desktop; do
         [[ -f "${launcher}" ]] || continue
-        chmod 0755 "${launcher}"
+        if [[ ! -L "${launcher}" ]]; then
+            chmod 0755 "${launcher}"
+        fi
         if gio set -t string "${launcher}" metadata::trusted true \
             && gio info "${launcher}" | grep -Fq 'metadata::trusted: true'; then
             # DING notices the refreshed mtime and redraws the launcher icon.
-            touch "${launcher}"
+            if [[ -L "${launcher}" ]]; then
+                touch -h "${launcher}"
+            else
+                touch "${launcher}"
+            fi
         else
             all_trusted=0
         fi

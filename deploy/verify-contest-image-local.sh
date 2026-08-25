@@ -160,6 +160,13 @@ for _attempt in $(seq 1 90); do
             docker logs --tail 120 "${name}" >&2 || true
             exit 1
         fi
+        finalizer_status="$(docker exec "${name}" \
+            cat /home/student/.contest-finalizer-status 2>/dev/null || true)"
+        if [[ "${finalizer_status}" == failed:* ]]; then
+            echo "candidate desktop finalizer failed: ${name} ${finalizer_status}" >&2
+            docker logs --tail 120 "${name}" >&2 || true
+            exit 1
+        fi
         if docker exec "${name}" grep -Fqx ready \
             /home/student/.contest-finalizer-status >/dev/null 2>&1 \
             && docker exec "${name}" pgrep -x gnome-shell >/dev/null 2>&1 \

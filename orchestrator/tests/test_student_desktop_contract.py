@@ -21,6 +21,15 @@ DESKTOP_CONFIG = (
     / "bin"
     / "configure-contest-desktop.sh"
 )
+FINALIZER = (
+    ROOT
+    / "noi-linux-official"
+    / "rootfs"
+    / "usr"
+    / "local"
+    / "bin"
+    / "finalize-contest-session.sh"
+)
 
 
 class StudentDesktopContractTests(unittest.TestCase):
@@ -59,6 +68,11 @@ class StudentDesktopContractTests(unittest.TestCase):
         desktop_config = DESKTOP_CONFIG.read_text(encoding="utf-8")
         self.assertIn("03_开始答题.desktop", desktop_config)
         self.assertIn('if [[ ! -L "$launcher" ]]', desktop_config)
+
+    def test_finalizer_does_not_modify_read_only_launcher_targets(self):
+        finalizer = FINALIZER.read_text(encoding="utf-8")
+        self.assertIn('if [[ ! -L "${launcher}" ]]', finalizer)
+        self.assertIn('touch -h "${launcher}"', finalizer)
 
     def test_geany_execute_and_explicit_input_switch_are_configured(self):
         for marker in (
