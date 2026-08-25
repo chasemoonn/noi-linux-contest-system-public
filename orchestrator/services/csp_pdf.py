@@ -615,7 +615,16 @@ def inspect_pdf(
         raise PdfBuildError(
             f"生成的 PDF 页数不足: {len(reader.pages)} < {minimum_pages}"
         )
-    missing = [needle for needle in required_text if needle and needle not in text]
+    # PDF text extractors may insert line breaks and extra spaces where a
+    # Paragraph wrapped visually.  Required text is a content check, not a
+    # demand that a long title remain on one physical line.
+    normalized_text = re.sub(r"\s+", " ", text).strip()
+    missing = [
+        needle
+        for needle in required_text
+        if needle
+        and re.sub(r"\s+", " ", str(needle)).strip() not in normalized_text
+    ]
     if missing:
         raise PdfBuildError("生成的 PDF 缺少必要文本: " + ", ".join(missing))
     return PdfInspection(path, len(reader.pages), path.stat().st_size, text)

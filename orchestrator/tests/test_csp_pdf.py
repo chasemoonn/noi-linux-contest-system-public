@@ -105,6 +105,18 @@ class CSPPdfTests(unittest.TestCase):
             self.assertIn(b"/Helvetica-Bold", payload)
             self.assertIn(b"/Courier", payload)
 
+    def test_long_wrapped_contest_title_passes_content_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wrapped-title.pdf"
+            title = (
+                "NOI Linux V1 Alpha 最终双题验收 "
+                "2026-08-25T17:25:10.616Z"
+            )
+            result = render_csp_pdf(title, "NOI Linux", self._documents(), path)
+            self.assertGreaterEqual(result.page_count, 2)
+            checked = inspect_pdf(path, required_text=(title,), minimum_pages=2)
+            self.assertEqual(checked.page_count, result.page_count)
+
     def test_unclosed_code_block_is_rejected_without_partial_pdf(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "paper.pdf"
