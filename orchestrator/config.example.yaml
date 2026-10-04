@@ -11,7 +11,7 @@ cloud:
     region_id: "${ALIYUN_REGION_ID:-cn-hangzhou}"
     instance_id: "${ALIYUN_INSTANCE_ID:-i-xxxxxxxx}"
     # 必须是目标 ECS 主网卡专属的普通 basic 安全组。关闭态只允许
-    # 下面唯一 OJ /32 的精确 TCP 22/80；其他/重复入站规则会阻断开放。
+    # 下面唯一 OJ /32 的精确 TCP 22/80（TLS 模式另含 443）；其他/重复入站规则会阻断开放。
     # 学生规则的 owner 标识会自动包含该前缀和 instance_id。
     desktop_access:
       # 只有完成安全组 ID/RAM/EIP 校验后才改为 true，避免旧部署被自动切换。
@@ -43,6 +43,14 @@ contest_server:
   # 临时比赛用固定 EIP 裸 HTTP 直连；只允许省略端口或 :80。
   # 留空则使用云 API 当前返回的 EIP。
   gateway_public_base_url: "${GATEWAY_PUBLIC_BASE_URL:-}"
+  # 可选加密直连：默认关闭，不会自动迁移已有部署。详见 docs/DESKTOP_TLS.md。
+  # 开启前必须配置独立域名、受信任证书和 OJ /32 的 TCP 443 管理规则，
+  # 同时设 gateway_scheme=https、gateway_public_base_url=https://专用域名、
+  # cloud.aliyun.desktop_access.port=443，并补齐两侧通知域名白名单。
+  gateway_tls:
+    enabled: false
+    certificate: "/etc/noi-tls/fullchain.pem"
+    certificate_key: "/etc/noi-tls/privkey.pem"
   submit_proxy_port: 18082
   docker_image: "noi-linux-official:2.0"
   docker_network: "seats"
@@ -50,6 +58,8 @@ contest_server:
   memory: "2560m"
   memory_swap: "2560m" # 与 memory 相同，避免 swap 抖动
   cpus: "1.5"
+  # Includes threads. Lower limits can crash GNOME/Firefox during normal use.
+  # Valid range: 1024..65536. Raising the ceiling does not reserve extra memory.
   pids_limit: 1024
   shm_size: "1g"
   resolution: "1366x768"
@@ -65,7 +75,7 @@ hydro:
   submit_enabled: true
   notify_enabled: true
   # 必须与 Hydro 插件 ORCHESTRATOR_NOTIFY_ALLOWED_HTTPS_HOSTS 一致；仅精确域名。
-  # 裸 HTTP EIP 模式的站内消息先到该 HTTPS 控制面并立即 302；桌面和 WS 不经 OJ。
+  # 裸 HTTP EIP 模式的站内消息先到该 HTTPS 入口选择页；TLS 模式直接使用加密桌面域名。
   notify_allowed_https_hosts:
     - "exam.example.com"
   orchestrator_token: "${HYDRO_ORCHESTRATOR_TOKEN}"

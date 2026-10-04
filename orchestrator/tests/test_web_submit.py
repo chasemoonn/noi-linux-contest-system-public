@@ -82,6 +82,13 @@ atexit.register(_cleanup_runtime)
 
 
 class CloudAdminRouteTests(unittest.TestCase):
+    def test_malformed_teacher_sso_returns_unauthorized_without_session(self):
+        with mock.patch.object(main, "issue_teacher_session") as issue:
+            with self.assertRaises(HTTPException) as caught:
+                main.admin_sso("abcdefghijklmnop.中文")
+        self.assertEqual(caught.exception.status_code, 401)
+        issue.assert_not_called()
+
     def test_oj_teacher_session_cannot_cross_contest_boundary(self):
         teacher = main.TeacherIdentity(
             42,
@@ -399,7 +406,7 @@ class MaterialAdminRouteTests(unittest.TestCase):
             main.hydro, "get_problem", side_effect=lambda pid: problems.get(pid)
         ), mock.patch.dict(
             main.cfg["hydro"], {"submit_enabled": True}
-        ):
+        ), mock.patch.object(main, "artifact_runner", object()):
             response = main.admin_register(
                 tid=tid,
                 files="",
@@ -502,6 +509,13 @@ class MaterialAdminRouteTests(unittest.TestCase):
 
         stored = main.store.get_contest(tid)
         self.assertEqual(response.status_code, 303)
+        self.assertEqual(stored["material_state"], "review")
+        revisions = main.store.artifact_revisions(tid)
+        pending = next(row for row in revisions if row["state"] == "review")
+        self.assertNotEqual(pending["revision"], first["revision"])
+        with mock.patch.object(main.material_publisher, "publish", side_effect=publication_side_effect):
+            main.admin_material_approve(tid, pending["revision"], main.ADMIN_CSRF, "teacher")
+        stored = main.store.get_contest(tid)
         self.assertEqual(stored["material_state"], "approved")
         self.assertNotEqual(stored["active_material_revision"], first["revision"])
         self.assertEqual(
@@ -798,7 +812,7 @@ class WebSubmitSessionTests(unittest.TestCase):
         self.assertIn('value="CSP001"', body)
         self.assertNotIn("中文错密", body)
         self.assertIn("登录回归赛", body)
-        self.assertIn("状态：进行中", body)
+        self.assertIn("状态：已就绪，等待时间同步", body)
 
     def test_accepted_credentials_without_cookie_show_explicit_browser_error(self):
         request = Request(
@@ -1005,6 +1019,33 @@ class WebSubmitSessionTests(unittest.TestCase):
         self.assertEqual(response.headers["referrer-policy"], "no-referrer")
         self.assertIn("default-src 'none'", response.headers["content-security-policy"])
         cloud_status.assert_not_called()
+
+    def test_tls_launch_page_has_one_encrypted_entry_and_no_legacy_fallback(self):
+        token = "AbCdEf012345_-xy"
+        contest = {"tid":"f"*24, "state":"ready",
+                   "end_at_ms":int((datetime.now(timezone.utc)+timedelta(minutes=5)).timestamp()*1000)}
+        configured = {"contest_server":{
+            "gateway_public_base_url":"https://desktop.example.test",
+            "gateway_tls":{"enabled":True}}}
+        isolated_store = mock.Mock()
+        isolated_store.seat_by_gateway_token.return_value = {"tid":contest["tid"], "uid":7}
+        isolated_store.get_contest.return_value = contest
+        isolated_store.contests.return_value = [contest]
+        isolated_store.seat_pool.return_value = {"state":{}}
+        isolated_store.seat_pool_assignment.return_value = {"state":"released"}
+        with mock.patch.object(main, "cfg", configured), mock.patch.object(main, "store", isolated_store), \
+                mock.patch.object(main, "fallback_gateway_url") as fallback:
+            response = main.student_desktop_redirect(token)
+        body = response.body.decode("utf-8")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(f"https://desktop.example.test/s/{token}/vnc.html?", body)
+        self.assertIn("进入加密桌面", body)
+        self.assertIn("不要忽略警告", body)
+        self.assertNotIn("临时 HTTP", body)
+        self.assertNotIn("兼容入口", body)
+        self.assertEqual(body.count('<a '), 1)
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+        fallback.assert_not_called()
 
     def test_notification_redirect_fails_closed_before_release(self):
         token = "seat-token-value-1234567890"
@@ -1552,10 +1593,10 @@ class WebSubmitRealtimeTests(unittest.TestCase):
                 )
         self.assertEqual(raised.exception.status_code, 409)
 
-    def test_rule_violation_persists_original_and_force_zero_judge_source(self):
+    def test_advisory_never_rewrites_judge_source(self):
         judge = mock.Mock()
         judge.enqueue.return_value = {"id": 13, "judge_state": "pending"}
-        original = "int main(){return 0;}\n"
+        original = '#include <windows.h>\nint main(){return 0;}\n'
         with mock.patch.object(main, "realtime_judge", judge):
             main._enqueue_web_source(
                 self.seat, self.contest, "apple", original, "d" * 32
@@ -1563,8 +1604,19 @@ class WebSubmitRealtimeTests(unittest.TestCase):
         payload = judge.enqueue.call_args.kwargs
         self.assertEqual(payload["source"], original)
         self.assertTrue(payload["issues"])
-        self.assertTrue(payload["judge_source"].startswith('#error "NOI environment rule violation"'))
-        self.assertTrue(payload["judge_source"].endswith(original))
+        self.assertEqual(payload["judge_source"], original)
+
+    def test_fstream_and_macro_submissions_keep_exact_source(self):
+        for original in (
+            '#include <fstream>\nint main(){std::ifstream in("apple.in");std::ofstream out("apple.out");}',
+            '#include <cstdio>\n#define TASK "apple"\nint main(){freopen(TASK ".in","r",stdin);freopen(TASK ".out","w",stdout);}',
+        ):
+            with self.subTest(source=original):
+                judge = mock.Mock()
+                with mock.patch.object(main, "realtime_judge", judge):
+                    main._enqueue_web_source(self.seat, self.contest, "apple", original, "d" * 32)
+                self.assertEqual(judge.enqueue.call_args.kwargs["judge_source"], original)
+                self.assertEqual(judge.enqueue.call_args.kwargs["issues"], [])
 
 
 class WebSubmitDownloadTests(unittest.TestCase):

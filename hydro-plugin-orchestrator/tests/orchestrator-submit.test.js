@@ -102,8 +102,12 @@ const hydroMock = {
             ...contestOverrides,
             docId: tid,
         }),
-        getStatus: async () => (contestStatusPresent ? ({
+        getStatus: async (_domain, tid, uid) => (contestStatusPresent ? ({
             ...defaultContestStatus,
+            journal: recordDocuments.filter((record) => String(record.contest) === String(tid)
+                && record.uid === uid).map((record) => ({
+                rid: record._id, pid: record.pid, status: record.status, score: record.score,
+            })),
             ...contestStatusOverrides,
         }) : null),
         isOngoing: () => {
@@ -141,6 +145,8 @@ const hydroMock = {
                 domainId,
                 files: args.files,
                 judgeAt: new Date(),
+                status: 1,
+                score: 100,
                 lang,
                 pid,
                 uid,
@@ -382,17 +388,25 @@ test('restart resumes an incomplete legacy journal without re-adding the record'
     contestOverrides = { pids: [], rule: 'ioi' };
     hydroMock.SettingModel.langs.cc.disabled = true;
     try {
+        await assert.rejects(
+            submit({ submission_id: id, submission_kind: 'realtime' }),
+            (error) => error.name === 'OrchestratorSubmissionAmbiguousError',
+        );
+        assert.deepEqual(calls, before, 'missing status must not manufacture or reset a result');
+        contestStatusPresent = true;
+        contestStatusOverrides = { journal: [{ rid, pid: 101, status: 1, score: 100 }] };
         const result = await submit({ submission_id: id, submission_kind: 'realtime' });
         assert.equal(result.rid, rid);
     } finally {
         contestOngoing = true;
         contestStatusPresent = true;
+        contestStatusOverrides = {};
         contestOverrides = {};
         hydroMock.SettingModel.langs.cc.disabled = false;
     }
 
     assert.equal(calls.recordAdds, before.recordAdds);
-    assert.equal(calls.statusUpdates, before.statusUpdates + 1);
+    assert.equal(calls.statusUpdates, before.statusUpdates);
     assert.equal(calls.problemCounts, before.problemCounts + 1);
     assert.equal(calls.userCounts, before.userCounts + 1);
     const recovered = JSON.parse(
@@ -610,7 +624,7 @@ test('read-only status resolves one committed record after response loss and plu
     assert.match(resolved.rid, /^[0-9a-f]{24}$/);
     assert.deepEqual(concurrent, resolved);
     assert.equal(calls.recordAdds, before.recordAdds + 1);
-    assert.equal(calls.statusUpdates, before.statusUpdates + 1);
+    assert.equal(calls.statusUpdates, before.statusUpdates);
     assert.equal(calls.problemCounts, before.problemCounts + 1);
     assert.equal(calls.userCounts, before.userCounts + 1);
 
@@ -624,6 +638,83 @@ test('read-only status resolves one committed record after response loss and plu
     });
     assert.deepEqual(await resolveSubmission(id), { status: 'multiple' });
     recordDocuments.pop();
+});
+
+test('status recovery never resets an existing judged score to waiting zero', async () => {
+    const id = submissionId('never-reset-judged-score');
+    recordAddFailure = new Error('lost response');
+    recordAddFailureCommits = true;
+    try {
+        await assert.rejects(submit({ submission_id: id }), /lost response/);
+    } finally {
+        recordAddFailure = null;
+        recordAddFailureCommits = false;
+    }
+    const candidate = recordDocuments.at(-1);
+    const journal = [{ rid: candidate._id, pid: candidate.pid, status: 1, score: 100 }];
+    const originalUpdate = hydroMock.ContestModel.updateStatus;
+    hydroMock.ContestModel.updateStatus = async () => {
+        calls.statusUpdates += 1;
+        journal[0] = { ...journal[0], status: 0, score: 0 };
+    };
+    contestStatusOverrides = { journal };
+    try {
+        assert.equal((await resolveSubmission(id)).status, 'resolved');
+        assert.equal(journal[0].score, 100);
+        assert.equal(journal[0].status, 1);
+    } finally {
+        hydroMock.ContestModel.updateStatus = originalUpdate;
+        contestStatusOverrides = {};
+    }
+});
+
+test('status recovery preserves a judged score and waits for the matching contest journal', async () => {
+    const id = submissionId('preserve-judged-score');
+    const before = { ...calls };
+    recordAddFailure = new Error('response lost after judging');
+    recordAddFailureCommits = true;
+    try {
+        await assert.rejects(submit({ submission_id: id }), /response lost/);
+    } finally {
+        recordAddFailure = null;
+        recordAddFailureCommits = false;
+    }
+    const candidate = recordDocuments.at(-1);
+    const journal = [{ rid: candidate._id, pid: candidate.pid, status: 1, score: 100 }];
+    const originalUpdate = hydroMock.ContestModel.updateStatus;
+    hydroMock.ContestModel.updateStatus = async () => {
+        calls.statusUpdates += 1;
+        journal[0] = { ...journal[0], status: 0, score: 0 };
+    };
+    try {
+        // The record may be judged before Hydro has published its contest journal.
+        contestStatusOverrides = { journal: [] };
+        assert.deepEqual(await resolveSubmission(id), { status: 'pending' });
+        assert.equal(calls.statusUpdates, before.statusUpdates);
+        contestStatusOverrides = { journal: [{ ...journal[0], score: 0 }] };
+        assert.deepEqual(await resolveSubmission(id), { status: 'pending' });
+        contestStatusOverrides = { journal: [{ ...journal[0], status: 0 }] };
+        assert.deepEqual(await resolveSubmission(id), { status: 'pending' });
+        contestStatusOverrides = { journal: [{ ...journal[0], pid: 999 }] };
+        assert.deepEqual(await resolveSubmission(id), { status: 'pending' });
+        contestStatusOverrides = { journal: [journal[0], journal[0]] };
+        assert.deepEqual(await resolveSubmission(id), { status: 'pending' });
+        contestStatusOverrides = { journal };
+        assert.equal((await resolveSubmission(id)).status, 'resolved');
+        assert.equal(calls.statusUpdates, before.statusUpdates);
+        assert.equal(journal[0].score, 100);
+        assert.equal(journal[0].status, 1);
+        assert.equal(calls.recordAdds, before.recordAdds + 1);
+        // A real zero is a valid score, not a missing result or recovery default.
+        candidate.score = 0;
+        candidate.status = 2;
+        journal[0] = { ...journal[0], score: 0, status: 2 };
+        assert.equal((await resolveSubmission(id)).status, 'resolved');
+        assert.equal(calls.statusUpdates, before.statusUpdates);
+    } finally {
+        hydroMock.ContestModel.updateStatus = originalUpdate;
+        contestStatusOverrides = {};
+    }
 });
 
 test('read-only status never guesses when the exact record is missing', async () => {

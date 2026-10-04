@@ -80,6 +80,11 @@ class WorkloadActionAgentTests(unittest.TestCase):
                 mock.patch.object(agent, "verify_signature") as verify:
             digest = agent.verify_browser(row, agent.datetime(2026, 8, 13, 0, 0, 50, tzinfo=agent.timezone.utc))
         self.assertRegex(digest, r"^[a-f0-9]{64}$"); verify.assert_called_once()
+        envelope['payload']['transport_profile'] = 'direct_https'
+        with mock.patch.object(agent, 'read_private', return_value=agent.canonical(envelope)), \
+                mock.patch.object(agent, 'verify_signature') as verify:
+            digest = agent.verify_browser(row, agent.datetime(2026, 8, 13, 0, 0, 50, tzinfo=agent.timezone.utc))
+        self.assertRegex(digest, r'^[a-f0-9]{64}$'); verify.assert_called_once()
         envelope["payload"]["seat_set_sha256"] = "f" * 64
         with mock.patch.object(agent, "read_private", return_value=agent.canonical(envelope)):
             with self.assertRaisesRegex(agent.ActionAgentError, "15-seat login"):

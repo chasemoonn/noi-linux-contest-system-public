@@ -121,7 +121,7 @@ def patch_keyboard(text: str) -> str:
 
     modern_public = """    ungrab() {
 """
-    modern_public_patched = """    syncModifiers(e) {
+    modern_public_v1 = """    syncModifiers(e) {
         // contestSyncModifiers: release only stale browser modifiers.
         // A browser can lose a keyup while focus or IME state is changing.
         // Mouse events still carry the host's current modifier state, so use
@@ -136,6 +136,24 @@ def patch_keyboard(text: str) -> str:
 
     ungrab() {
 """
+    modern_public_patched = modern_public_v1.replace(
+        "// contestSyncModifiers: release only stale browser modifiers.",
+        "// contestSyncModifiersV2: release only stale browser modifiers.",
+    ).replace(
+        "        this._interruptAltGrSequence();",
+        """        if (typeof this._interruptAltGrSequence === 'function') {
+            this._interruptAltGrSequence();
+        } else if (this._altGrArmed) {
+            // Older class-based releases (including 1.2) have a pending
+            // Ctrl/AltGr timer but no _interruptAltGrSequence helper. Cancel
+            // it so it cannot press Ctrl after the mouse already released it.
+            this._altGrArmed = false;
+            clearTimeout(this._altGrTimeout);
+            if (e.ctrlKey && !('ControlLeft' in this._keyDownList)) {
+                this._sendKeyEvent(KeyTable.XK_Control_L, 'ControlLeft', true);
+            }
+        }""",
+    )
     legacy_public = """    ungrab: function () {
 """
     legacy_public_patched = """    syncModifiers: function (e) {
@@ -150,7 +168,13 @@ def patch_keyboard(text: str) -> str:
     ungrab: function () {
 """
     if "contestSyncModifiers" in text:
-        return text
+        if "contestSyncModifiersV2" in text:
+            return text
+        if text.count(modern_public_v1) == 1:
+            return text.replace(modern_public_v1, modern_public_patched, 1)
+        if text.count(legacy_public_patched) == 1:
+            return text
+        raise RuntimeError("unexpected noVNC existing modifier patch source")
     modern_count = text.count(modern_public)
     legacy_count = text.count(legacy_public)
     if modern_count + legacy_count != 1:
@@ -225,21 +249,23 @@ def patch_tree(root: Path) -> None:
         (root / "usr/share/novnc/core/input/keyboard.js", patch_keyboard),
         (root / "usr/share/novnc/core/rfb.js", patch_rfb),
     )
+    changes = []
+    # Validate every source anchor before writing any target. An unfamiliar
+    # later module must not leave the earlier modules half-patched.
     for path, transform in targets:
         original = path.read_text(encoding="utf-8")
         patched = transform(original)
         if patched != original:
-            with path.open("w", encoding="utf-8", newline="\n") as stream:
-                stream.write(patched)
+            changes.append((path, patched))
         if path.name == "rfb.js" and "contestLegacyModifierEvent" in patched:
             mouse_path = root / "usr/share/novnc/core/input/mouse.js"
             mouse_original = mouse_path.read_text(encoding="utf-8")
             mouse_patched = patch_legacy_mouse(mouse_original)
             if mouse_patched != mouse_original:
-                with mouse_path.open(
-                    "w", encoding="utf-8", newline="\n"
-                ) as stream:
-                    stream.write(mouse_patched)
+                changes.append((mouse_path, mouse_patched))
+    for path, patched in changes:
+        with path.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(patched)
 
 
 def main(argv: list[str]) -> int:

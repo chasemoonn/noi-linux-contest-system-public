@@ -4,9 +4,10 @@
   <div class="section">
     <div class="section__header"><h1 class="section__title">NOI Linux 考试管理</h1></div>
     <div class="section__body">
-      <p>请选择一场由你管理的 OJ 比赛。进入后只能操作该场比赛。</p>
+      <p>请选择一场由你管理、尚未结束的 OI 比赛。进入后确认材料与名单，即可准备考试桌面。</p>
       {% if not contests.length %}
-        <p>尚无可管理的比赛。请先在 OJ 创建 OI 比赛。</p>
+        <p>当前没有符合条件的比赛：需要是 OI 赛制、尚未结束，并且你拥有管理权限。</p>
+        <p><a href="{{ url('contest_main') }}" class="button primary">前往 OJ 比赛列表</a></p>
       {% else %}
         <table class="data-table"><thead><tr><th>比赛</th><th>时间</th><th></th></tr></thead><tbody>
         {% for contest in contests %}
@@ -18,6 +19,7 @@
         {% endfor %}
         </tbody></table>
       {% endif %}
+      {% if ended_contests.length %}<details><summary>最近结束的比赛（查看收卷与归档）</summary><ul>{% for contest in ended_contests %}<li><a href="{{ url('orchestrator_teacher_console',tid=contest.docId) }}">{{ contest.title }}</a></li>{% endfor %}</ul></details>{% endif %}
     </div>
   </div>
 </div></div>

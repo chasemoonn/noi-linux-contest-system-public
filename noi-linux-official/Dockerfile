@@ -58,6 +58,19 @@ RUN chmod 0755 \
 # ambiguous multi-source policy state must stop the build.
 RUN python3 /usr/local/bin/install-firefox-cookie-policy.py
 
+# Geany 1.36 clips underscores at the official Monospace 10 default. Keep
+# the font and editor unchanged; reserve two pixels below each text line.
+# This changes only the packaged default, never existing student settings.
+RUN python3 /usr/local/bin/patch-geany-line-height.py
+
+# noVNC 1.0 stops after the first failed reconnect. Keep retrying boundedly
+# after an authenticated session; never retry rejected credentials or cancel.
+RUN python3 /usr/local/bin/patch-novnc-reconnect.py
+
+# noVNC 1.0 otherwise ignores quality/compression in generated desktop URLs.
+# Preserve its 6/2 defaults when parameters are absent or malformed.
+RUN python3 /usr/local/bin/patch-novnc-encoding-settings.py
+
 # Browser VNC can lose modifier key-up events during focus/IME changes, and
 # some host keyboards invert the numeric keypad. Patch only those noVNC event
 # translations; the official NOI Linux desktop and applications stay intact.
@@ -80,8 +93,9 @@ RUN [[ "${NOI_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]] \
 # Orchestration fails closed unless the desktop implements this versioned
 # finalizer-status protocol.
 LABEL org.noi.desktop.contract="finalizer-status-v1" \
+      org.noi.desktop.reconnect="bounded-network-retry-v1" \
       org.noi.desktop.input-fidelity="ibus-explicit-switch-v2" \
-      org.noi.desktop.keyboard-fidelity="numpad-and-stale-modifier-v1" \
+      org.noi.desktop.keyboard-fidelity="numpad-and-stale-modifier-v2" \
       org.noi.desktop.student-ux="canonical-source-and-geany-run-v2" \
       org.noi.iso.sha256="${NOI_ISO_SHA256}" \
       org.opencontainers.image.revision="${NOI_SOURCE_REVISION}"

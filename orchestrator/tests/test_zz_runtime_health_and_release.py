@@ -72,6 +72,12 @@ else:
     import main
 
 
+def _notification_store():
+    result = mock.Mock()
+    result.pending_seat_notifications.return_value = []
+    return result
+
+
 class ReleaseTimingTests(unittest.TestCase):
     def test_ten_minute_contest_uses_dynamic_notification_and_pending_text(self):
         contest = {
@@ -81,7 +87,7 @@ class ReleaseTimingTests(unittest.TestCase):
             "submission_mode": "both",
             "release_lead_minutes": 10,
         }
-        fake_store = mock.Mock()
+        fake_store = _notification_store()
         fake_store.seat_pool.return_value = {
             "state": {
                 "seats": [
@@ -133,7 +139,7 @@ class ReleaseTimingTests(unittest.TestCase):
             "submission_mode": "both",
             "release_lead_minutes": 5,
         }
-        fake_store = mock.Mock()
+        fake_store = _notification_store()
         fake_store.seat_pool.return_value = {
             "state": {
                 "seats": [{"slot_no": 1, "uid": 7, "state": "released"}]
@@ -170,7 +176,7 @@ class ReleaseTimingTests(unittest.TestCase):
             "submission_mode": "both",
             "release_lead_minutes": 5,
         }
-        fake_store = mock.Mock()
+        fake_store = _notification_store()
         fake_store.seat_pool.return_value = {
             "state": {"seats": [{"slot_no": 1, "uid": 7, "state": "released"}]}
         }
@@ -209,7 +215,7 @@ class ReleaseTimingTests(unittest.TestCase):
             "title": "permanent notification failure",
             "release_lead_minutes": 5,
         }
-        fake_store = mock.Mock()
+        fake_store = _notification_store()
         fake_store.seat_pool.return_value = {
             "state": {"seats": [{"slot_no": 1, "uid": 7, "state": "released"}]}
         }
@@ -249,7 +255,7 @@ class ReleaseTimingTests(unittest.TestCase):
             "title": "bounded notification batch",
             "release_lead_minutes": 5,
         }
-        fake_store = mock.Mock()
+        fake_store = _notification_store()
         fake_store.seat_pool.return_value = {
             "state": {
                 "seats": [
@@ -299,7 +305,7 @@ class ReleaseTimingTests(unittest.TestCase):
             "submission_mode": "both",
             "release_lead_minutes": 5,
         }
-        fake_store = mock.Mock()
+        fake_store = _notification_store()
         fake_store.seat_pool.return_value = {
             "state": {
                 "seats": [
@@ -354,7 +360,7 @@ class DisabledRealtimeHealthTests(unittest.TestCase):
     def test_active_web_or_both_contest_fails_closed_without_worker(self):
         for mode, state in (("web", "registered"), ("both", "collecting")):
             with self.subTest(mode=mode, state=state):
-                fake_store = mock.Mock()
+                fake_store = _notification_store()
                 fake_store.active_seat_count.return_value = 0
                 fake_store.seat_notification_health.return_value = {
                     "counts": {"pending": 0, "retry": 0, "sent": 0},
@@ -381,7 +387,7 @@ class DisabledRealtimeHealthTests(unittest.TestCase):
                 )
 
     def test_folder_only_active_contests_stay_healthy_without_worker(self):
-        fake_store = mock.Mock()
+        fake_store = _notification_store()
         fake_store.active_seat_count.return_value = 0
         fake_store.seat_notification_health.return_value = {
             "counts": {
@@ -427,7 +433,7 @@ class DisabledRealtimeHealthTests(unittest.TestCase):
             "invalid_pool",
         ):
             with self.subTest(state=state):
-                fake_store = mock.Mock()
+                fake_store = _notification_store()
                 fake_store.active_seat_count.return_value = 0
                 fake_store.contests.return_value = [
                     {

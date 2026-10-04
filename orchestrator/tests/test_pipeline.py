@@ -1537,6 +1537,18 @@ class PipelineHelpersTests(unittest.TestCase):
         self.assertIn('$4 == "192.0.2.2:80"', activation)
 
     def test_direct_prepare_reaches_ready_with_https_fallback_enabled(self):
+        self._direct_prepare_fixture()
+
+    def test_tls_prepare_reaches_ready_without_oj_fallback(self):
+        self._direct_prepare_fixture(secure=True)
+
+    def test_tls_dns_failure_does_not_start_a_billable_server(self):
+        self._direct_prepare_fixture(secure=True, failure="dns")
+
+    def test_tls_certificate_failure_does_not_create_any_seat(self):
+        self._direct_prepare_fixture(secure=True, failure="certificate")
+
+    def _direct_prepare_fixture(self, *, secure=False, failure=""):
         tid = "8" * 24
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1594,8 +1606,25 @@ class PipelineHelpersTests(unittest.TestCase):
                 remote = FakeRemote()
                 remote.paper_digest = digest
                 remote.testdata_digest = testdata_digest
+                config = pipeline_config(root)
+                if secure:
+                    config["contest_server"].update(
+                        gateway_scheme="https",
+                        gateway_public_base_url="https://desktop.example.test",
+                        gateway_tls={"enabled":True, "certificate":"/etc/noi-tls/fullchain.pem",
+                                     "certificate_key":"/etc/noi-tls/privkey.pem"},
+                    )
+                    # A fixed Aliyun EIP remains discoverable while stopped.
+                    cvm.status = lambda: (cvm.state, "198.51.100.10")
+                if failure == "certificate":
+                    run = remote.run
+                    def failed_material(command, timeout=300):
+                        if 'openssl verify' in command:
+                            raise RuntimeError("TLS certificate invalid")
+                        return run(command, timeout)
+                    remote.run = failed_material
                 pipe = Pipeline(
-                    pipeline_config(root), cvm, hydro, store, MagicMock()
+                    config, cvm, hydro, store, MagicMock()
                 )
                 pipe.frontend = MagicMock()
                 pipe._remote = lambda _: remote
@@ -1603,13 +1632,34 @@ class PipelineHelpersTests(unittest.TestCase):
                     return_value={"page_status": 200, "websocket_status": 101}
                 )
 
-                ip = pipe.prepare(tid)
+                dns_ip = "198.51.100.11" if failure == "dns" else "198.51.100.10"
+                with patch('socket.getaddrinfo', return_value=[(2,1,6,'',(dns_ip,443))]):
+                    if failure:
+                        with self.assertRaisesRegex(RuntimeError, "DNS" if failure == "dns" else "certificate"):
+                            pipe.prepare(tid)
+                        self.assertFalse(cvm.direct_open)
+                        self.assertEqual(cvm.start_count, 0 if failure == "dns" else 1)
+                        self.assertFalse(any(c.startswith('docker run') for c in remote.commands))
+                        self.assertEqual(store.get_contest(tid)["state"], "error")
+                        return
+                    ip = pipe.prepare(tid)
 
                 self.assertEqual(ip, "198.51.100.10")
                 self.assertEqual(store.get_contest(tid)["state"], "ready")
                 self.assertTrue(cvm.direct_open)
-                pipe.frontend.enable.assert_called_once_with("198.51.100.10", 80)
-                pipe.frontend.disable.assert_not_called()
+                if secure:
+                    pipe.frontend.enable.assert_not_called()
+                    pipe.frontend.disable.assert_called_once()
+                    self.assertLess(
+                        next(i for i,c in enumerate(remote.commands) if 'openssl verify' in c),
+                        next(i for i,c in enumerate(remote.commands) if c.startswith('docker run')),
+                    )
+                    rendered = next(text for text,path in remote.contents if path.endswith('noi-seats.conf'))
+                    self.assertIn('listen 127.0.0.1:80', rendered)
+                    self.assertIn('listen 0.0.0.0:443 ssl', rendered)
+                else:
+                    pipe.frontend.enable.assert_called_once_with("198.51.100.10", 80)
+                    pipe.frontend.disable.assert_not_called()
                 pipe._probe_direct_gateway.assert_called_once()
             finally:
                 store.close()
@@ -2017,11 +2067,11 @@ class PipelineHelpersTests(unittest.TestCase):
                 logged = submit_log["alice"]["apple"]
                 self.assertEqual(logged["rid"], "9" * 24)
                 self.assertTrue(logged["reused_realtime"])
-                self.assertFalse(logged["enforced_zero"])
+                self.assertTrue(logged["source_preserved"])
             finally:
                 store.close()
 
-    def test_collect_missing_formal_file_creates_auditable_zero_final_record(self):
+    def test_collect_missing_formal_file_records_absence_without_fabricated_submission(self):
         tid = "2" * 24
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2068,15 +2118,16 @@ class PipelineHelpersTests(unittest.TestCase):
                     report = pipe.collect(tid)
 
                 self.assertEqual(report["alice"]["apple"]["status"], "missing")
-                factory.return_value.submit_one.assert_called_once()
+                factory.return_value.submit_one.assert_not_called()
                 run_dir = next((root / "collected" / tid).iterdir())
                 submit_log = json.loads(
                     (run_dir / "submit_log.json").read_text(encoding="utf-8")
                 )
                 logged = submit_log["alice"]["apple"]
                 self.assertTrue(logged["ok"])
-                self.assertTrue(logged["enforced_zero"])
-                self.assertEqual(logged["rid"], "d" * 24)
+                self.assertTrue(logged["skipped"])
+                self.assertFalse(logged["submitted"])
+                self.assertNotIn("rid", logged)
             finally:
                 store.close()
 

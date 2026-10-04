@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>NOI qualification remote echo</title>
+<style>
+body { background:#ddd; color:#222; font:20px sans-serif; }
+canvas { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); }
+</style>
+<body tabindex="0">
+<h1>NOI 测试桌面按键回显</h1>
+<p>只在隔离的合成测试座位内打开。本页不是学生递交页面，也不证明整场比赛或容量通过。</p>
+<p>点击色条后，用字母、数字或方向键测试。测量期间保持本页前台；编辑、编译、提交须另外测试。</p>
+<canvas id="echo" width="608" height="16"></canvas>
+<script>
+const canvas=document.getElementById('echo'), ctx=canvas.getContext('2d');
+const magic=[[235,35,205],[20,210,220],[235,215,25],[35,65,230]];
+const epoch=1+(crypto.getRandomValues(new Uint16Array(1))[0]%65535);
+let counter=0, lastKey=0;
+function checksum(bits) {
+  let crc=0xffff;
+  for(const bit of bits) {
+    const top=(crc>>>15)^Number(bit);
+    crc=(crc<<1)&0xffff;
+    if(top) crc^=0x1021;
+  }
+  return crc;
+}
+function draw() {
+  const bits=(value,length)=>value.toString(2).padStart(length,'0');
+  const payload=bits(epoch,16)+bits(counter,32)+bits(lastKey,8);
+  const data=payload+bits(checksum(payload),16);
+  const colors=magic.concat([...data].map(bit=>bit==='1'?[240,240,240]:[16,16,16]));
+  colors.forEach((color,i)=>{ctx.fillStyle='rgb('+color.join(',')+')';ctx.fillRect(i*8,0,8,16);});
+}
+window.addEventListener('keydown',event=>{
+  if(event.repeat||event.ctrlKey||event.altKey||event.metaKey||event.shiftKey) return;
+  const arrows={ArrowLeft:128,ArrowRight:129,ArrowUp:130,ArrowDown:131};
+  const code=arrows[event.key]||(/^[a-z0-9]$/.test(event.key)?event.key.charCodeAt(0):0);
+  if(!code||counter===0xffffffff) return;
+  event.preventDefault();counter++;lastKey=code;draw();
+},true);
+draw();
+document.body.focus();
+</script></body></html>

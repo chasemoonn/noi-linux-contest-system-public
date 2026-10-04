@@ -1956,6 +1956,16 @@ class Store:
             == 0,
         }
 
+    def seat_notification_statuses(self, tid: str) -> list[dict]:
+        """Teacher-visible delivery metadata only, never credentials or URLs."""
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT uid,kind,credential_revision,state,updated_at "
+                "FROM seat_notifications WHERE tid=? ORDER BY updated_at DESC,rowid DESC",
+                (str(tid),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def retry_failed_seat_notifications(self, tid: str) -> int:
         """Requeue only failed notifications for currently released credentials.
 
@@ -2016,7 +2026,7 @@ class Store:
                 cur = conn.execute(
                     "UPDATE seat_notifications SET state='pending',last_error='',"
                     "updated_at=datetime('now','localtime') WHERE tid=? AND uid=? "
-                    "AND kind='seat_ready' AND credential_revision=? "
+                    "AND (kind='seat_ready' OR kind LIKE 'seat_reminder:%') AND credential_revision=? "
                     "AND state='permanent_failed'",
                     (str(tid), int(uid), int(credential_revision)),
                 )
@@ -2848,7 +2858,9 @@ class Store:
 
         An expired ``sending`` row is eligible for a new lease. A later row in
         the same ``(tid, uid, problem)`` lane remains blocked until every older
-        delivery is either submitted or permanently failed.
+        delivery is either submitted or definitively failed. An ambiguous
+        result is not a definitive failure: only exact OJ resolution may
+        release that lane, without replaying the unknown insert.
         """
         timestamp = time.time() if now is None else float(now)
         duration = float(lease_seconds)
@@ -2874,7 +2886,7 @@ class Store:
             "AND NOT EXISTS (SELECT 1 FROM web_submissions older "
             "WHERE older.tid=q.tid AND older.uid=q.uid "
             "AND older.problem=q.problem AND older.id<q.id "
-            "AND older.judge_state IN ('pending','retry','sending')) "
+            "AND older.judge_state IN ('pending','retry','sending','ambiguous')) "
             "ORDER BY q.id LIMIT 1"
         )
         lease_token = secrets.token_hex(16)
@@ -2891,6 +2903,19 @@ class Store:
                 "SELECT * FROM web_submissions WHERE id=?", (int(row["id"]),)
             ).fetchone()
         return dict(claimed)
+
+    def ambiguous_web_submission_blocker(self, submission_row_id: int) -> int | None:
+        """Return the oldest unresolved row through this target in its lane."""
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT older.id FROM web_submissions target "
+                "JOIN web_submissions older ON older.tid=target.tid "
+                "AND older.uid=target.uid AND older.problem=target.problem "
+                "AND older.id<=target.id WHERE target.id=? "
+                "AND older.judge_state='ambiguous' ORDER BY older.id LIMIT 1",
+                (int(submission_row_id),),
+            ).fetchone()
+        return int(row["id"]) if row else None
 
     def mark_web_submission_submitted(
         self,

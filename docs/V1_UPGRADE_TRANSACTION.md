@@ -48,6 +48,15 @@ python3 scripts/build_v1_install_backup.py \
 
 标准输出只给出 `backup_manifest_sha256` 等非秘密身份。备份目录必须一直保留到升级和独立复核完成。
 
+PM2 采集器支持 Hydro 的 root-owned Nix profile 入口（包括上例的符号链接），执行前同时校验入口
+与解析目标的所有目录。标准 `/nix/store` 的 root-owned `1775` 目录是唯一可写目录例外：sticky bit
+保护其中已有的 root-owned 软件包；软件包、可执行文件和其他目录仍不得由普通用户修改。不要为通过
+采集而修改 Nix store 权限或关闭路径检查。查询使用 `jlist --silent`，不需要执行 `pm2 update`。
+
+若报告 `PM2 live Hydro environment differs from persistent dump`，这是另一项真实的配置差异，
+不是路径兼容问题。必须先由维护人员核对当前运行配置与持久启动配置，确定应保留哪一份，再开始升级。
+不要通过忽略差异、盲目 `pm2 save --force` 或重启所有进程来通过检查；非 NOI 配置不在本插件的自动修复范围。
+
 ## 3. 私有计划
 
 私有生成器会再次核对公开计划 ID、候选、资格报告中的控制器 image ID、封存备份、

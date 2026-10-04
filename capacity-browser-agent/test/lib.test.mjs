@@ -3,10 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
 import {
   AgentError, atomicWrite, canonicalJson, envelope, readSequence,
   reserveNextSequence, validateConfig, validateTelemetry
-  , seatSetSha256
+  , seatSetSha256, verifyDirectNavigation, seatWebSocketUrl, trackSeatSocket, assertSeatSockets
 } from '../lib.mjs';
 
 function config(root = '/root/noi-v1-browser') {
@@ -53,6 +54,84 @@ function payload(sequence = 1) {
     key_to_frame_samples_ms: [20, 21, 22, 23, 24]
   };
 }
+
+function directTlsConfig() {
+  const row = config();
+  row.transport_profile = 'direct_https';
+  row.direct_endpoint_ipv4 = '203.0.113.9';
+  row.seat_urls = Array.from({ length: 15 }, (_, index) => {
+    const token = `seat-${String(index + 1).padStart(12, '0')}`;
+    return `https://desktop.example.test/s/${token}/vnc.html?path=s/${token}/websockify&autoconnect=true`;
+  });
+  row.rtt_url = row.seat_urls[0].split('?')[0];
+  row.websocket_url_pattern = '^wss://desktop[.]example[.]test/s/[^/]+/websockify$';
+  row.seat_set_sha256 = seatSetSha256(row);
+  return row;
+}
+
+test('native TLS profile binds DNS origin, endpoint IP and distinct seat paths', () => {
+  const row = directTlsConfig();
+  assert.equal(validateConfig(row).transport_profile, 'direct_https');
+  const changedIp = structuredClone(row);
+  changedIp.direct_endpoint_ipv4 = '203.0.113.10';
+  assert.notEqual(seatSetSha256(changedIp), row.seat_set_sha256);
+  assert.throws(() => validateConfig(changedIp), /SHA256 differs/);
+  const sameSeat = directTlsConfig();
+  sameSeat.seat_urls[1] = sameSeat.seat_urls[0] + '&resize=remote';
+  sameSeat.seat_set_sha256 = seatSetSha256(sameSeat);
+  assert.throws(() => validateConfig(sameSeat), /distinct seat paths/);
+});
+
+test('native TLS configuration refuses plaintext, IP host, wrong port and mismatched VNC path', () => {
+  for (const change of [
+    row => { row.seat_urls[0] = row.seat_urls[0].replace('https:', 'http:'); },
+    row => { row.seat_urls[0] = row.seat_urls[0].replace('desktop.example.test', '203.0.113.9'); },
+    row => { row.seat_urls[0] = row.seat_urls[0].replace('desktop.example.test', 'desktop.example.test:8443'); },
+    row => { row.seat_urls[0] = row.seat_urls[0].replace('path=s/', 'path=other/'); },
+    row => { row.direct_endpoint_ipv4 = 'not-an-ip'; },
+    row => { row.rtt_url = 'https://desktop.example.test/healthz'; },
+  ]) {
+    const row = directTlsConfig(); change(row); row.seat_set_sha256 = seatSetSha256(row);
+    assert.throws(() => validateConfig(row), AgentError);
+  }
+});
+
+test('signed telemetry can carry native TLS without exposing endpoint addresses', () => {
+  const row = payload(); row.transport_profile = 'direct_https';
+  assert.equal(validateTelemetry(row).transport_profile, 'direct_https');
+  assert.doesNotMatch(canonicalJson(envelope(row, 'agent', Buffer.alloc(64, 7))), /203[.]0[.]113|desktop[.]example/);
+});
+
+test('native navigation checks the actual peer and the exact frozen seat URL', () => {
+  const row = directTlsConfig(), url = row.seat_urls[0];
+  verifyDirectNavigation(row, url, url, { ipAddress: '203.0.113.9', port: 443 });
+  verifyDirectNavigation(row, url, url, { ipAddress: '::ffff:203.0.113.9', port: 443 });
+  for (const [actualUrl, peer] of [
+    [url, null], [url, { ipAddress: '203.0.113.10', port: 443 }],
+    [url, { ipAddress: '203.0.113.9', port: 80 }],
+    [row.seat_urls[1], { ipAddress: '203.0.113.9', port: 443 }],
+  ]) assert.throws(() => verifyDirectNavigation(row, url, actualUrl, peer), /frozen seat/);
+});
+
+test('socket tracking requires one WSS connection per distinct seat and tracks reconnects', () => {
+  const row = directTlsConfig();
+  const state = { opens: 0, closes: 0, connected: Array(15).fill(0), invalid: false };
+  const socket = index => Object.assign(new EventEmitter(), { url: () => seatWebSocketUrl(row.seat_urls[index]) });
+  const sockets = row.seat_urls.map((_, index) => socket(index));
+  sockets.forEach((value, index) => trackSeatSocket(row, state, index, value));
+  assertSeatSockets(state);
+  sockets[0].emit('close'); sockets[0].emit('close');
+  assert.equal(state.closes, 1);
+  trackSeatSocket(row, state, 1, socket(1));
+  assert.equal(state.opens - state.closes, 15);
+  assert.throws(() => assertSeatSockets(state), /not uniquely/);
+  state.connected[1] -= 1;
+  trackSeatSocket(row, state, 0, socket(0));
+  assertSeatSockets(state);
+  const plaintext = Object.assign(new EventEmitter(), { url: () => seatWebSocketUrl(row.seat_urls[0]).replace('wss:', 'ws:') });
+  trackSeatSocket(row, state, 0, plaintext);
+  assert.throws(() => assertSeatSockets(state), /not uniquely/);
+});
 
 test('configuration binds the exact seat target set on one origin', () => {
   assert.equal(validateConfig(config()).qualification_marker, 'NOI-V1-QUAL-1234567890ABCDEF');

@@ -61,13 +61,14 @@ import os, stat, sys
 
 root = Path(sys.argv[1])
 expected = {
-    "index.js", "package.json", "tests", "templates",
+    "index.js", "package.json", "tests", "templates", "locale",
     "tests/orchestrator-materials.test.js",
     "tests/orchestrator-notify.test.js",
     "tests/orchestrator-problem-fileio.test.js",
     "tests/orchestrator-submit.test.js",
     "tests/orchestrator-teacher-sso.test.js",
     "templates/orchestrator_teacher_home.html",
+    "locale/zh.yaml", "locale/en.yaml",
 }
 observed = set()
 for path in root.rglob("*"):
@@ -76,7 +77,7 @@ for path in root.rglob("*"):
     if stat.S_ISLNK(info.st_mode) or relative not in expected:
         raise SystemExit("plugin source tree contains an unexpected entry")
     if path.is_dir():
-        if relative not in {"tests", "templates"}:
+        if relative not in {"tests", "templates", "locale"}:
             raise SystemExit("plugin source tree contains an unexpected directory")
     elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise SystemExit("plugin source file metadata is unsafe")
@@ -185,10 +186,13 @@ fi
 
 install -d -m 0755 "${addon_dir}"
 install -d -m 0755 "${addon_dir}/templates"
+install -d -m 0755 "${addon_dir}/locale"
 install -m 0644 "${source_dir}/index.js" "${addon_dir}/index.js"
 install -m 0644 "${source_dir}/package.json" "${addon_dir}/package.json"
 install -m 0644 "${source_dir}/templates/orchestrator_teacher_home.html" \
   "${addon_dir}/templates/orchestrator_teacher_home.html"
+install -m 0644 "${source_dir}/locale/zh.yaml" "${addon_dir}/locale/zh.yaml"
+install -m 0644 "${source_dir}/locale/en.yaml" "${addon_dir}/locale/en.yaml"
 
 python3 - "${addon_file}" "${addon_dir}" <<'PY'
 import json

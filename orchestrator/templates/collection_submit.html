@@ -1,0 +1,26 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>答题 - CSP 程序回收系统</title><style>{{ collection_css|safe }}</style></head><body><main class="frame"><header class="brand"><strong>CSP 程序回收系统</strong><a class="logout" href="/submit/{{ seat.submit_token }}/logout">退出登录</a></header><div class="body">
+<aside class="side"><div class="seat-meta" id="exam-clock">北京时间 {{ now }}</div><div class="seat-meta" id="exam-deadline">截止时间以 OJ 为准</div><div class="seat-meta">准考证号 {{ seat.candidate }}</div><a class="nav" href="#notice">考试须知</a><a class="nav" href="/submit/{{ seat.submit_token }}/paper">试题下载</a><a class="nav active" href="/submit/{{ seat.submit_token }}">答题</a></aside>
+<section class="stage"><div class="card"><div class="card-title">{{ contest.title if contest is defined else '本场比赛' }} · 网页递交</div><div class="content"><div id="notice" class="notice">网页递交优先：每题采用最后一次成功接收的网页代码，不采用最高分版本，目录不会覆盖它。<br>从未网页递交的题目，截止时才读取“03_答案文件夹/题目名/题目名.cpp”兜底。请在截止前保存并核对。收卷保护期不是额外答题时间。</div>
+{% if saved %}<div class="success" role="status">{{ saved }}.cpp 已被程序回收系统接收，并将自动送入 OJ 评测。请使用“查看”核对完整内容、时间和字节数。</div>{% endif %}
+{% if submit_error == 'missing_file' %}<div class="submit-error" role="alert">正式答案目录中没有找到 {{ error_problem }}.cpp。请使用“网页选择 .cpp 递交”，或把代码保存到规范目录，等待截止兜底。</div>{% elif submit_error == 'read_failed' %}<div class="submit-error" role="alert">暂时无法读取 {{ error_problem }}.cpp，请使用“网页选择 .cpp 递交”。</div>{% elif submit_error == 'web_locked' %}<div class="submit-error" role="alert">{{ error_problem }} 已经使用网页递交，此后只接受新的网页文件，不再读取本地目录。</div>{% endif %}
+{% if not opened %}<div class="closed">当前不在 OJ 比赛提交时间内，不能继续递交。已有网页代码可查看、下载；<a href="{{ oj_base_url }}/contest/{{ contest.tid }}">回到 OJ 查看比赛与最终记录</a>。</div>{% endif %}
+<p class="candidate">准考证号：{{ seat.candidate }}</p><table class="answer-table"{% if receipt_revision is defined %} data-receipt-revision="{{ receipt_revision }}"{% endif %}><thead><tr><th>题目</th><th>最终代码来源</th><th>提交时间（北京时间）</th><th>内容长度</th><th>OJ 送评状态</th><th>操作</th></tr></thead><tbody>
+{% for problem in problems %}{% set item = latest.get(problem) %}{% set folder = directory_receipts.get(problem) if directory_receipts is defined else none %}
+<tr><td>{{ loop.index }}. {{ problem }}</td><td>
+{% if item %}<strong>最后一次网页递交</strong><br><span class="small">目录不再覆盖</span>
+{% elif folder and folder.state in ('submitted','stored') %}<strong>已目录收卷</strong>
+{% elif folder and folder.state == 'missing' %}<span class="empty">目录无有效代码</span>
+{% elif folder and folder.state == 'pending' %}<span class="empty">目录等待收卷</span>
+{% elif folder %}<span class="empty">目录收卷状态待核验</span>
+{% else %}<span class="empty">未网页递交</span><br><span class="small">截止时目录兜底</span>{% endif %}
+</td><td>{% if item %}{{ item.created_at|beijing_time }}{% elif folder and folder.created_at %}收卷：{{ folder.created_at|beijing_time }}{% else %}—{% endif %}</td>
+<td>{% if item %}{{ item.size }}B{% elif folder and folder.size is defined %}{{ folder.size }}B{% else %}—{% endif %}</td><td>
+{% if item %}
+{% if item.judge_state == 'submitted' %}<span class="judge-ok">已送入 OJ</span>{% elif item.judge_state in ('pending','sending') %}<span class="judge-wait">已接收，等待送评</span>{% elif item.judge_state == 'retry' %}<span class="judge-wait">已接收，送评重试中</span>{% elif item.judge_state == 'ambiguous' %}<span class="judge-error">已接收，送评结果待核对</span>{% elif item.judge_state == 'permanent_failed' %}<span class="judge-error">已接收，送评异常，请联系老师</span>{% else %}<span class="judge-local">已保存，尚未确认送达 OJ</span>{% endif %}
+{% elif folder and folder.state == 'submitted' %}<span class="judge-ok">已送入 OJ</span>
+{% elif folder and folder.state == 'missing' %}<span class="judge-local">未代交，请到 OJ 核对</span>
+{% elif folder and folder.state == 'stored' %}<span class="judge-wait">已归档，未启用 OJ 回传</span>
+{% elif folder and folder.state == 'pending' %}<span class="judge-wait">等待收卷确认</span>
+{% elif folder %}<span class="judge-error">暂时无法核验，请到 OJ 查看或联系老师</span>
+{% else %}—{% endif %}</td><td><div class="actions">{% if item %}<a class="btn btn-view" href="/submit/{{ seat.submit_token }}/view/{{ problem }}">查看</a><a class="btn btn-view" href="/submit/{{ seat.submit_token }}/download/{{ problem }}">下载源码</a>{% endif %}<a data-submit-action class="btn btn-submit{% if not opened %} btn-disabled{% endif %}" href="/submit/{{ seat.submit_token }}/edit/{{ problem }}">网页选择 .cpp 递交</a></div></td></tr>{% endfor %}</tbody></table>
+<p class="small">“已送入 OJ”表示已创建评测记录，不代表判题结束。比赛期间不向选手显示成绩。列表每 15 秒检查送评状态，变化时自动更新；文件递交页不会自动刷新。</p><p id="sync-status" class="small">时间与 OJ 同步；成绩以 OJ 为准。</p></div></div></section></div></main>{% if clock is defined %}{% include 'collection_clock.html' %}{% endif %}</body></html>

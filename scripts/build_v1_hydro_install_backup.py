@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 
 from verify_v1_install_backup import BackupError, safe_directory, safe_file
+from v1_pm2_entrypoint import trusted_pm2_entrypoint
 from verify_v1_hydro_install_backup import (
     LAUNCH_KEYS, canonical, normalized_launch, verify_pm2, verify_tree_archive,
 )
@@ -103,10 +104,8 @@ def build_tree_archive(root: Path) -> bytes:
 
 
 def pm2_jlist(pm2: Path) -> list:
-    requested=Path(os.path.abspath(pm2)); resolved=requested.resolve(strict=True); metadata=os.lstat(requested)
-    if requested!=resolved or stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) \
-            or not os.access(resolved,os.X_OK):
-        raise CollectError("PM2 executable is unsafe")
+    try: resolved=trusted_pm2_entrypoint(pm2)
+    except (OSError, ValueError) as exc: raise CollectError(str(exc)) from exc
     environment={"HOME":"/root","USER":"root","LOGNAME":"root","SHELL":"/bin/bash",
                  "PM2_HOME":"/root/.pm2","PATH":"/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:"
                  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",

@@ -1,7 +1,7 @@
 # V1 单座真实演练手册
 
 这不是在生产比赛上试功能。它是一场使用专用合成考号、真实控制机、真实桌面机和真实
-OJ 记录的资格演练。只有八个阶段全部完成并由离线核验器组合后，单座资格才能从
+OJ 记录的资格演练。只有九个阶段全部完成并由离线核验器组合后，单座资格才能从
 `pending` 变为 `passed`。
 
 ## 1. 安全边界
@@ -44,8 +44,11 @@ sudo python3 scripts/collect_v1_components.py \
   --output /root/noi-v1-rehearsal-input/desktop.json
 ```
 
-OJ 主机对安装器实际部署的 `index.js` 和 `package.json` 两文件树做精确文件集与
-字节摘要；源码树中的测试文件由 Linux CI 证明，不得伪装成现场已部署文件：
+OJ 主机对安装器实际部署的 `index.js`、`package.json` 和
+`templates/orchestrator_teacher_home.html`、`locale/zh.yaml`、`locale/en.yaml` 五个文件做
+精确文件集与字节摘要；子目录仅为 `templates` 和 `locale`。教师页面模板和语言文件必须参与摘要，
+不能为了通过旧检查删除这些文件或只核对入口脚本。
+源码树中的测试文件由 Linux CI 证明，不得伪装成现场已部署文件：
 
 ```bash
 sudo python3 scripts/collect_v1_components.py \
@@ -101,11 +104,31 @@ sudo python3 scripts/init_v1_single_seat_session.py \
 | 2 | `desktop` | desktop | 五项入口、CSP 路径、页面 200、WebSocket 101 |
 | 3 | `compile` | desktop | 读取正式源文件，编译成功，指定输入与期望输出摘要一致 |
 | 4 | `manual_submit` | control | 手动网页回收生成独立 OJ RID，且已送达 |
-| 5 | `cutoff_submit` | control | 到点冻结变更后源码，触发一次补交并得到新 RID |
-| 6 | `oj_record` | oj | 两个 RID 分别绑定两个源码摘要，教师与学生视图均可见 |
-| 7 | `collection` | control | 自动归档、送达日志、最终 RID/源码和收卷回执绑定，进入 `safe_wait` |
+| 5 | `cutoff_submit` | control | 网页递交题的目录另存不同代码，到点仍复用网页回执；另一道从未网页递交的题从目录补交，得到独立 RID |
+| 6 | `oj_record` | oj | 网页题仍绑定原网页 RID/源码，目录备用题绑定其独立 RID/源码，教师与学生视图均可见 |
+| 7 | `collection` | control | 自动归档、送达日志分别绑定两题选中的 RID/源码及收卷回执，进入 `safe_wait` |
 | 8 | `shutdown` | control | 延迟边界后入口关闭、规则为零、座位为零、云主机 `STOPPED` |
 | 9 | `test_cleanup` | oj | 仅对本 session 的合成测试赛使用 OJ 原生删除；比赛、报名、讨论、定时任务和比赛关联记录均已清零 |
+
+### 网页优先与目录备用必须在同一座位的两道题上验证
+
+`context.problem_slug` 是网页递交题（例如 `apple`）。先在网页成功递交并确认送达，再把本地该题
+文件改成不同内容；截止时不得覆盖网页版本，不得生成替代网页回执的新 RID。
+`manual_submit` 必须记录截止前最后一次已确认的网页回执；若演练中再次网页递交，应重新采集这一步。
+
+另一题（例如 `banana`）仅在目录保存，不做网页递交。截止时验证该题目录备用送评成功。
+`cutoff_submit` 观测必须包含：
+
+- `submission_policy=web-priority-with-folder-fallback-v1`。
+- `final_rid`、`final_submission_id` 复用网页题已确认值，`last_confirmed_source_sha256` 绑定网页源码。
+- `frozen_source_sha256` 是网页题故意修改后的本地快照，须与网页源码不同，但不能成为最终送评版本。
+- `fallback_problem_slug`、`fallback_source_sha256`、`fallback_rid` 绑定另一题的目录备用结果；
+  `fallback_web_submission_count=0` 来自该题真实查询，`supplemental_submitted=true` 仅指此目录备用题。
+- `oj_record` 与 `collection` 分别重复绑定三个 `fallback_*` 身份字段；其中 `final_source_sha256`
+  仍指网页题的网页源码。两题 RID 必须不同。
+
+旧的“同题网页递交后用目录代码覆盖”的观测不再被接受，不能改写旧报告冒充新演练证据。
+这些字段必须由真实动作、查询和归档生成；本说明不是可手填的合格报告模板。
 
 每阶段开始时：
 
@@ -118,7 +141,8 @@ sudo python3 scripts/init_v1_single_seat_session.py \
      --output /root/noi-v1-rehearsal-input/ordinary-<phase>.json
    ```
 
-   `--pm2-bin` 必须是 `readlink -f` 后的最终 root-owned 可执行文件，不接受 symlink。
+   `--pm2-bin` 必须通过采集器的 root 所有权和目录权限检查；可使用经过完整链接链验证的
+   Nix profile 入口，或其可信的最终可执行文件，不能指向普通用户可替换的路径。
 
 2. 对应角色用第 2 节命令重新采集当前组件事实，并与 OJ 基线一起在
    120 秒内传到该角色的 root-only 输入目录。

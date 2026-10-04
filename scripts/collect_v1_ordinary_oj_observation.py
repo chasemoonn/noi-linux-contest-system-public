@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 
 from verify_v1_single_seat_evidence import EvidenceError, validate_ordinary_oj
+from v1_pm2_entrypoint import trusted_pm2_entrypoint
 
 
 PROCESS_NAMES = ("caddy", "hydro-sandbox", "hydrooj", "mongodb")
@@ -86,32 +87,10 @@ def request(origin: str, path: str, *, expect_json: bool = False) -> tuple[int, 
 
 
 def pm2_rows(pm2_bin: Path) -> list[dict]:
-    if not pm2_bin.is_absolute():
-        raise ObservationError("PM2 executable path is unsafe")
-    requested = Path(os.path.abspath(pm2_bin))
-    resolved = requested.resolve(strict=True)
-    if requested != resolved:
-        raise ObservationError("PM2 executable path must be canonical")
-    info = resolved.stat()
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_uid != 0
-        or info.st_nlink != 1
-        or stat.S_IMODE(info.st_mode) & 0o022
-        or not os.access(resolved, os.X_OK)
-    ):
-        raise ObservationError("PM2 executable metadata is unsafe")
-    current = Path(resolved.anchor)
-    for part in resolved.parts[1:-1]:
-        current = current / part
-        ancestor = current.lstat()
-        if (
-            not stat.S_ISDIR(ancestor.st_mode)
-            or stat.S_ISLNK(ancestor.st_mode)
-            or ancestor.st_uid != 0
-            or stat.S_IMODE(ancestor.st_mode) & 0o022
-        ):
-            raise ObservationError("PM2 executable ancestor is unsafe")
+    try:
+        resolved = trusted_pm2_entrypoint(pm2_bin)
+    except (OSError, ValueError) as exc:
+        raise ObservationError(str(exc)) from exc
     try:
         result = subprocess.run(
             [str(resolved), "jlist", "--silent"],

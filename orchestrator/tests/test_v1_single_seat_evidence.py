@@ -124,15 +124,23 @@ class SingleSeatEvidenceTests(unittest.TestCase):
             },
             "cutoff_submit": {
                 "deadline_state": "frozen",
-                "final_rid": final_rid,
-                "final_submission_id": "3" * 64,
+                "submission_policy": "web-priority-with-folder-fallback-v1",
+                "final_rid": manual_rid,
+                "final_submission_id": "2" * 64,
                 "frozen_source_sha256": final_sha,
                 "last_confirmed_source_sha256": manual_sha,
                 "supplemental_submitted": True,
+                "fallback_problem_slug": "banana",
+                "fallback_source_sha256": "c" * 64,
+                "fallback_rid": final_rid,
+                "fallback_web_submission_count": 0,
             },
             "oj_record": {
-                "final_rid": final_rid,
-                "final_source_sha256": final_sha,
+                "final_rid": manual_rid,
+                "final_source_sha256": manual_sha,
+                "fallback_problem_slug": "banana",
+                "fallback_source_sha256": "c" * 64,
+                "fallback_rid": final_rid,
                 "final_score_source": "last_record",
                 "manual_rid": manual_rid,
                 "manual_source_sha256": manual_sha,
@@ -144,8 +152,11 @@ class SingleSeatEvidenceTests(unittest.TestCase):
                 "archive_manifest_sha256": "4" * 64,
                 "collection_receipt_sha256": receipt,
                 "delivery_safe": True,
-                "final_rid": final_rid,
-                "final_source_sha256": final_sha,
+                "final_rid": manual_rid,
+                "final_source_sha256": manual_sha,
+                "fallback_problem_slug": "banana",
+                "fallback_source_sha256": "c" * 64,
+                "fallback_rid": final_rid,
                 "state": "safe_wait",
                 "submit_failures": 0,
                 "submit_log_sha256": "5" * 64,
@@ -199,8 +210,69 @@ class SingleSeatEvidenceTests(unittest.TestCase):
 
     def test_changed_cutoff_source_is_required(self):
         self.facts["cutoff_submit"]["observations"]["frozen_source_sha256"] = "6" * 64
-        with self.assertRaisesRegex(verifier.EvidenceError, "changed-source"):
+        with self.assertRaisesRegex(verifier.EvidenceError, "changed.*folder"):
             self.validated()
+
+    def test_cutoff_cannot_replace_web_rid_or_submission(self):
+        for field, value in (("final_rid", "9" * 24), ("final_submission_id", "3" * 64)):
+            with self.subTest(field=field):
+                original = self.facts["cutoff_submit"]["observations"][field]
+                self.facts["cutoff_submit"]["observations"][field] = value
+                with self.assertRaisesRegex(verifier.EvidenceError, "reuse.*web"):
+                    verifier.combine(self.validated(), self.digests, self.revision)
+                self.facts["cutoff_submit"]["observations"][field] = original
+
+    def test_fallback_cannot_target_web_problem(self):
+        self.facts["cutoff_submit"]["observations"]["fallback_problem_slug"] = "apple"
+        with self.assertRaisesRegex(verifier.EvidenceError, "different problem"):
+            verifier.combine(self.validated(), self.digests, self.revision)
+
+    def test_fallback_cannot_have_web_submission(self):
+        self.facts["cutoff_submit"]["observations"]["fallback_web_submission_count"] = 1
+        with self.assertRaisesRegex(verifier.EvidenceError, "no web"):
+            self.validated()
+
+    def test_fallback_requires_distinct_rid(self):
+        self.facts["cutoff_submit"]["observations"]["fallback_rid"] = "8" * 24
+        with self.assertRaisesRegex(verifier.EvidenceError, "distinct"):
+            verifier.combine(self.validated(), self.digests, self.revision)
+
+    def test_fallback_exact_binding_in_oj_and_collection(self):
+        for phase in ("oj_record", "collection"):
+            for field, value in (("fallback_problem_slug", "other"), ("fallback_rid", "f" * 24), ("fallback_source_sha256", "f" * 64)):
+                with self.subTest(phase=phase, field=field):
+                    original = self.facts[phase]["observations"][field]
+                    self.facts[phase]["observations"][field] = value
+                    with self.assertRaisesRegex(verifier.EvidenceError, "fallback"):
+                        verifier.combine(self.validated(), self.digests, self.revision)
+                    self.facts[phase]["observations"][field] = original
+
+    def test_legacy_overwrite_policy_is_rejected(self):
+        self.facts["cutoff_submit"]["observations"]["submission_policy"] = "directory-overwrites-web"
+        with self.assertRaisesRegex(verifier.EvidenceError, "policy"):
+            self.validated()
+
+    def test_combined_evidence_requires_current_policy(self):
+        evidence = verifier.combine(self.validated(), self.digests, self.revision)
+        for value in (None, "directory-overwrites-web"):
+            with self.subTest(value=value):
+                legacy = copy.deepcopy(evidence)
+                if value is None:
+                    legacy.pop("submission_policy")
+                else:
+                    legacy["submission_policy"] = value
+                with self.assertRaises(verifier.EvidenceError):
+                    verifier.validate_combined(legacy)
+
+    def test_fallback_identifiers_are_validated(self):
+        for phase in ("cutoff_submit", "oj_record", "collection"):
+            for field, value in (("fallback_problem_slug", "../apple"), ("fallback_rid", "bad"), ("fallback_source_sha256", "bad")):
+                with self.subTest(phase=phase, field=field):
+                    original = self.facts[phase]["observations"][field]
+                    self.facts[phase]["observations"][field] = value
+                    with self.assertRaises(verifier.EvidenceError):
+                        self.validated()
+                    self.facts[phase]["observations"][field] = original
 
     def test_oj_must_bind_both_exact_source_versions(self):
         self.facts["oj_record"]["observations"]["final_source_sha256"] = "f" * 64

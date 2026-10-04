@@ -3,10 +3,11 @@
   "title": "NOI Linux V1 verified single-seat evidence",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "schema_version", "status", "session_id", "source", "components", "context", "checks", "ordinary_oj_isolation", "facts"],
+  "required": ["$schema", "schema_version", "submission_policy", "status", "session_id", "source", "components", "context", "checks", "ordinary_oj_isolation", "facts"],
   "properties": {
     "$schema": {"const": "v1-single-seat-evidence.schema.json"},
     "schema_version": {"const": 1},
+    "submission_policy": {"const": "web-priority-with-folder-fallback-v1"},
     "status": {"const": "passed"},
     "session_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "source": {"type": "object"},

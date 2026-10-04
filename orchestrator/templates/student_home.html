@@ -1,0 +1,11 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NOI Linux · 考试入口</title>
+<style>body{font-family:Arial,"Microsoft YaHei",sans-serif;max-width:560px;margin:50px auto;padding:0 20px;color:#203044}input,button{width:100%;padding:12px;margin:6px 0 18px;font-size:16px;box-sizing:border-box}button{background:#1769aa;color:#fff;border:0;border-radius:4px;cursor:pointer}label{display:block}.seat,.notice{background:#f4f8ff;border:1px solid #bcd;padding:18px;border-radius:8px;line-height:1.9;margin:20px 0}.error{color:#a22;background:#fff0f0;padding:14px}.hint{color:#65758b;font-size:14px;line-height:1.8}code{background:#eee;padding:2px 6px}a{color:#1769aa;overflow-wrap:anywhere}</style></head><body>
+<h1>NOI Linux 考试入口</h1>
+{% if not seat %}<div class="notice"><strong>{{ entry_state or '查询考试座位' }}</strong><br>请先在 OJ 报名。考试入口与考试密码由系统通过 OJ 私信发放，也可在这里查询自己的座位。</div>{% endif %}
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if seat %}<section class="seat"><h2>{{ seat.uname }} 的考试座位</h2><p>准考证号：<code>{{ seat.candidate }}</code><br>考试密码：<code>{{ seat.vnc_pass }}</code></p>
+<p><a href="{{ seat.url }}" target="_blank" rel="noopener">进入 NOI Linux 桌面</a>　<a href="{{ seat.web_submit_url }}" target="_blank" rel="noopener">打开网页程序回收</a></p>
+<p>桌面连接和网页回收使用上面同一套考试密码。网页回收用户名可填写准考证号或 OJ 用户名。</p>
+<p><strong>{{ seat.mode_label }}</strong><br>网页每题以最后一次成功接收的代码为准。没有网页递交的题目，截止时才回收桌面“03_答案文件夹”中的代码；网页递交过的题不会被目录覆盖。</p></section>
+{% else %}<form method="post" action="/query"><label for="oj-user">OJ 用户名</label><input id="oj-user" name="uname" autocomplete="username" required><label for="oj-password">OJ 登录密码（不是考试密码）</label><input id="oj-password" name="password" type="password" autocomplete="current-password" required><button type="submit">查询我的座位</button></form>{% endif %}
+<p class="hint">找不到座位：先检查是否已报名、是否到发放时间。登录或桌面异常时请联系本场老师，不要反复重新报名。{% if notice %}<br><a href="{{ notice }}" target="_blank" rel="noopener">选手操作说明</a>{% endif %}</p><p><a href="{{ oj_base_url }}">返回 OJ，查看比赛与私信</a></p></body></html>

@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import ssl
 import tarfile
 import tempfile
 import threading
@@ -24,11 +25,15 @@ except ImportError:  # pragma: no cover - production runs on Linux
     fcntl = None
 
 from .frontend import make_frontend
+from .gateway_tls import (
+    gateway_http_bind, gateway_tls_enabled, gateway_tls_settings,
+    nginx_tls_server, verify_gateway_dns,
+)
 from .hydro_submit import HydroSubmitter
 from .materials import approved_material_paths, sha256_file
 from .remote import Remote
 from .seat_pool import SeatPoolState, TeacherApprovalRequiredError, desired_capacity
-from .static_check import check_answer_tree, check_code, force_zero_code
+from .static_check import check_answer_tree, check_code
 
 _TID = re.compile(r"^[0-9a-fA-F]{24}$")
 DESKTOP_IMAGE_CONTRACT_LABEL = "org.noi.desktop.contract"
@@ -113,6 +118,9 @@ server {{
         proxy_set_header Host {origin_host};
         proxy_ssl_server_name on;
         proxy_ssl_name {origin_host};
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_ssl_verify_depth 5;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-NOI-Submit-Transport private-http;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -126,6 +134,15 @@ server {{
 
 def _q(value) -> str:
     return shlex.quote(str(value))
+
+
+def render_gateway_conf(tid: str, server: dict, locations: str) -> str:
+    """Use the same listeners for first prepare, roster growth and replacement."""
+    return NGINX_CONF.format(
+        tid=tid,
+        listen=f"{gateway_http_bind(server)}:{int(server.get('gateway_listen',80))}",
+        locations=locations,
+    ) + nginx_tls_server(server, locations)
 
 
 def _seat_readiness_command(
@@ -262,12 +279,30 @@ def probe_novnc_gateway(
     quality: int,
     compression: int,
     timeout: float = 8.0,
+    scheme: str = "http",
+    required_valid_seconds: int = 0,
 ) -> dict:
     """Prove the valid seat page and its WebSocket upgrade through the EIP."""
+    if scheme not in {"http", "https"}:
+        raise ValueError("网关探针只支持 HTTP 或 HTTPS")
+    connection = http.client.HTTPConnection
+    options = {"timeout":timeout}
+    if scheme == "https":
+        connection = http.client.HTTPSConnection
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        options["context"] = context
+    default_port = 443 if scheme == "https" else 80
+    authority = str(host) + (f":{int(port)}" if int(port) != default_port else "")
     page_path = novnc_path(token, quality, compression)
-    page = http.client.HTTPConnection(str(host), int(port), timeout=timeout)
+    page = connection(str(host), int(port), **options)
     try:
-        page.request("GET", page_path, headers={"Host": str(host)})
+        if scheme == "https":
+            page.connect()
+            expiry = ssl.cert_time_to_seconds(page.sock.getpeercert()["notAfter"])
+            if expiry <= time.time() + max(0,int(required_valid_seconds)):
+                raise RuntimeError("桌面 HTTPS 证书有效期不足以覆盖本场比赛与收卷保护期")
+        page.request("GET", page_path, headers={"Host": authority})
         response = page.getresponse()
         response.read()
         if response.status != 200:
@@ -283,16 +318,16 @@ def probe_novnc_gateway(
             (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
         ).digest()
     ).decode("ascii")
-    websocket = http.client.HTTPConnection(str(host), int(port), timeout=timeout)
+    websocket = connection(str(host), int(port), **options)
     try:
         websocket.request(
             "GET",
             f"/s/{token}/websockify",
             headers={
-                "Host": str(host),
+                "Host": authority,
                 "Connection": "Upgrade",
                 "Upgrade": "websocket",
-                "Origin": f"http://{host}",
+                "Origin": f"{scheme}://{authority}",
                 "Sec-WebSocket-Key": key,
                 "Sec-WebSocket-Version": "13",
                 "Sec-WebSocket-Protocol": "binary",
@@ -370,6 +405,9 @@ class Pipeline:
             self._service_closing = True
 
     def _enable_frontend(self, host: str, port: int) -> None:
+        if gateway_tls_enabled(self.cfg["contest_server"]):
+            self._disable_frontend(force=True)
+            return
         with self._frontend_guard:
             self.frontend.enable(host, port)
             self._frontend_stopped_reconciled = False
@@ -390,6 +428,8 @@ class Pipeline:
         looks disabled.  Periodic calls are latched until the cloud is seen in
         a non-stopped state, avoiding needless Caddy reloads.
         """
+        if gateway_tls_enabled(self.cfg["contest_server"]):
+            return self._disable_frontend(force=force)
         with self._frontend_guard:
             if self._direct_access_enabled():
                 desired, _ = self._desired_desktop_access()
@@ -1395,14 +1435,7 @@ class Pipeline:
                     ),
                 )
             )
-        conf = NGINX_CONF.format(
-            tid=contest["tid"],
-            listen=(
-                f"{server.get('gateway_bind_address', '0.0.0.0')}:"
-                f"{int(server['gateway_listen'])}"
-            ),
-            locations="".join(locations),
-        )
+        conf = render_gateway_conf(contest["tid"], server, "".join(locations))
         mode = str(contest.get("submission_mode") or "folder")
         if mode in {"web", "both"}:
             public_base = str(
@@ -1997,12 +2030,45 @@ class Pipeline:
         # Resolving the configured base first detects a stale hard-coded EIP
         # before a student rule is published.
         gateway_base_url(server, ip)
+        if gateway_tls_enabled(server):
+            host = verify_gateway_dns(server, ip)
+            return probe_novnc_gateway(
+                host, 443, token,
+                quality=int(server.get("no_vnc_quality",9)),
+                compression=int(server.get("no_vnc_compression",2)),
+                scheme="https", required_valid_seconds=self._tls_validity_seconds(),
+            )
         return probe_novnc_gateway(
             ip,
             int(server.get("gateway_listen", 80)),
             token,
             quality=int(server.get("no_vnc_quality", 9)),
             compression=int(server.get("no_vnc_compression", 2)),
+        )
+
+    def _tls_validity_seconds(self) -> int:
+        now = int(time.time())
+        active = self.store.contests("preparing") + self.store.contests("ready")
+        end = max([now + 3600] + [int(c.get("end_at_ms") or 0)//1000 + 1800 for c in active])
+        return end - now
+
+    def _check_remote_tls_materials(self, remote: Remote) -> None:
+        tls = gateway_tls_settings(self.cfg["contest_server"])
+        if not tls:
+            return
+        # This is read-only and runs before creating any seat. nginx -t later
+        # also verifies that the private key matches the leaf certificate.
+        certificate, key = _q(tls["certificate"]), _q(tls["certificate_key"])
+        remote.run(
+            f"sudo test -r {certificate} && sudo test -r {key} && "
+            f"sudo openssl x509 -in {certificate} -noout "
+            f"-checkend {self._tls_validity_seconds()} >/dev/null && "
+            # x509 -checkhost can print a mismatch yet exit 0 in OpenSSL 3.0.
+            # verify checks hostname and trust with a meaningful failure code.
+            f"sudo openssl verify -purpose sslserver "
+            f"-verify_hostname {_q(tls['hostname'])} "
+            f"-CAfile /etc/ssl/certs/ca-certificates.crt "
+            f"-untrusted {certificate} {certificate} >/dev/null"
         )
 
     @staticmethod
@@ -2352,7 +2418,9 @@ class Pipeline:
             store.set_state(tid, "preparing", "收回旧桌面公网入口")
             self._revoke_desktop_access()
             fresh_prepare_started = True
-            initial_server_state, _ = self.cvm.status()
+            initial_server_state, initial_ip = self.cvm.status()
+            if gateway_tls_enabled(self.cfg["contest_server"]):
+                verify_gateway_dns(self.cfg["contest_server"], initial_ip)
             owns_server = initial_server_state.upper() != "RUNNING"
             ip = self._ensure_server()
             remote = self._remote(ip)
@@ -2370,8 +2438,13 @@ class Pipeline:
             self._assert_gateway_port_available(
                 remote,
                 int(server["gateway_listen"]),
-                str(server.get("gateway_bind_address", "0.0.0.0")),
+                gateway_http_bind(server),
             )
+            if gateway_tls_enabled(server):
+                self._assert_gateway_port_available(
+                    remote, 443, str(server.get("gateway_bind_address","0.0.0.0"))
+                )
+                self._check_remote_tls_materials(remote)
             seats_root = server["seats_root"]
             network = server["docker_network"]
             mode = str(contest.get("submission_mode") or "folder")
@@ -2597,14 +2670,7 @@ class Pipeline:
                 )
 
             store.set_state(tid, "preparing", "下发 nginx 座位网关配置")
-            conf = NGINX_CONF.format(
-                tid=tid,
-                listen=(
-                    f"{server.get('gateway_bind_address', '0.0.0.0')}:"
-                    f"{int(server['gateway_listen'])}"
-                ),
-                locations="".join(locations),
-            )
+            conf = render_gateway_conf(tid, server, "".join(locations))
             if web_enabled:
                 conf += SUBMIT_PROXY_CONF.format(
                     gateway=network_gateway,
@@ -2624,15 +2690,12 @@ class Pipeline:
                     int(server.get("no_vnc_quality", 9)),
                     int(server.get("no_vnc_compression", 2)),
                 ),
-                bind_address=str(
-                    server.get("gateway_bind_address", "0.0.0.0")
-                ),
+                bind_address=gateway_http_bind(server),
             )
             self._install_freeze_watchdog(remote, contest)
-            # Direct is the low-latency primary path. Keep the existing HTTPS
-            # proxy as an explicit compatibility fallback for networks that
-            # reject raw HTTP/IP. Both routes share the same seat token and
-            # are closed by the deadline/collection lifecycle.
+            # Legacy HTTP keeps the explicit OJ compatibility fallback. Native
+            # TLS instead closes that proxy, so it cannot become a plaintext
+            # escape path from OJ to the VM. Both modes use the same deadline.
             frontend_attempted = True
             self._enable_frontend(ip, int(server["gateway_listen"]))
             pool = self._reserve_roster(
@@ -2869,7 +2932,7 @@ class Pipeline:
                             code, encoding="utf-8"
                         )
                         user_web[name] = {
-                            "status": "ok" if not issues else "rule_violation",
+                            "status": "ok",
                             "file": f"{name}.cpp",
                             "issues": issues,
                             "sha256": submitted["sha256"],
@@ -2973,11 +3036,8 @@ class Pipeline:
                                     "ok": True,
                                     "rid": delivered_rid,
                                     "reused_realtime": True,
-                                    "enforced_zero": bool(
-                                        json.loads(
-                                            delivered.get("judge_issues") or "[]"
-                                        )
-                                    ),
+                                    "source_preserved": delivered.get("judge_source")
+                                    == delivered.get("source"),
                                     "issues": json.loads(
                                         delivered.get("judge_issues") or "[]"
                                     ),
@@ -2995,18 +3055,24 @@ class Pipeline:
                                 submit_failures += 1
                             continue
                         code = selected_sources[seat["uname"]][name]
-                        if not code:
-                            code = "// required source file was not collected\n"
-                        enforced_zero = item["status"] != "ok"
-                        if enforced_zero:
-                            code = force_zero_code(code, item["issues"])
+                        if item["status"] in {"missing", "invalid_filename"} or not code.strip():
+                            # A missing answer is not a fabricated CE submission.
+                            # Preserve its archive/report without creating an OJ record.
+                            user_log[name] = {
+                                "ok": True,
+                                "skipped": True,
+                                "submitted": False,
+                                "reason": "未收到规范目录下的非空代码，未向 OJ 代交",
+                                "issues": item["issues"],
+                            }
+                            continue
                         submission_id = submitter.submission_id(
                             contest["submission_session"], tid, seat["uid"], pid
                         )
                         result = submitter.submit_one(
                             tid, seat["uid"], pid, code, submission_id
                         )
-                        result["enforced_zero"] = enforced_zero
+                        result["source_preserved"] = True
                         result["issues"] = item["issues"]
                         if result.get("ok") and not _TID.fullmatch(
                             str(result.get("rid") or "")
@@ -3066,7 +3132,7 @@ class Pipeline:
                 out_dir / "collection_receipt.json", receipt
             )
             wait_message = (
-                f"已回收并送达 {len(seats)} 人；答案已冻结，"
+                f"已完成 {len(seats)} 人收卷；未交题目已标记，答案已冻结，"
                 f"等待截止后 {grace_minutes} 分钟安全关机"
             )
             if not store.enter_safe_wait(

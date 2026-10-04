@@ -17,7 +17,7 @@
     "docker_socket": {"const": "/var/run/docker.sock"},
     "telemetry_envelope": {"type": "string", "pattern": "^/[^\\u0000]+$"},
     "qualification_marker": {"type": "string", "pattern": "^NOI-V1-QUAL-[A-Z0-9]{16,64}$"},
-    "telemetry_transport_profile": {"const": "direct_http"},
+    "telemetry_transport_profile": {"enum": ["direct_http", "direct_https"]},
     "telemetry_seat_set_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "telemetry_signer": {"type": "string", "pattern": "^[A-Za-z0-9_.@+-]{1,80}$"},
     "telemetry_public_key": {"type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/=]{40,160}( [^\\r\\n]{1,120})?$"},

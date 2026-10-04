@@ -111,6 +111,13 @@ class StudentDesktopContractTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.entrypoint)
 
+    def test_input_instructions_do_not_blindly_toggle_an_already_english_session(self):
+        self.assertIn('本机输入法保持英文',self.entrypoint)
+        self.assertIn('如果已经是英文，不必再切换',self.entrypoint)
+        self.assertIn('不要用删除代码来退出选择',self.entrypoint)
+        self.assertIn('不一定显示在终端',self.entrypoint)
+        self.assertNotIn('先按 Ctrl+Space 切到英文',self.entrypoint)
+
 
 if __name__ == "__main__":
     unittest.main()

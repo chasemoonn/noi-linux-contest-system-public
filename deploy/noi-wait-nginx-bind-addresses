@@ -5,6 +5,9 @@ for _ in $(seq 1 60); do
         sed -nE 's/^[[:space:]]*listen[[:space:]]+([0-9.]+):[0-9]+.*$/\1/p' \
             /etc/nginx/conf.d/noi-*.conf 2>/dev/null | sort -u
     ); do
+        # INADDR_ANY listens on available interfaces; it is not an address that
+        # can appear in `ip address`. Still wait for explicit Docker bridge IPs.
+        [ "${address}" = "0.0.0.0" ] && continue
         if ! ip -o -4 address show | grep -Fq " ${address}/"; then
             ready=0
         fi

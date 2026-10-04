@@ -37,6 +37,63 @@ def config(prefix="/root/network-fault"):
 
 
 class NetworkFaultAgentTests(unittest.TestCase):
+    def test_controller_inspect_refuses_host_shared_or_unknown_network_mode(self):
+        row = config()
+        expected = row['controller']
+        value = {'Id': expected['container_id'], 'Image': expected['image_id'],
+                 'RestartCount': expected['restart_count'],
+                 'State': {'Pid': expected['pid'], 'StartedAt': expected['started_at'],
+                           'Running': True, 'Restarting': False}}
+        for mode in ('host', 'container:another', '', None):
+            with self.subTest(mode=mode):
+                value['HostConfig'] = {'NetworkMode': mode}
+                connection = mock.Mock()
+                connection.getresponse.return_value.status = 200
+                connection.getresponse.return_value.read.return_value = json.dumps(value).encode()
+                with mock.patch.object(agent, 'UnixHTTPConnection', return_value=connection):
+                    with self.assertRaisesRegex(agent.AgentError, 'dedicated network namespace'):
+                        agent.controller_inspect(row)
+        value['HostConfig'] = {'NetworkMode': 'noi-qualification'}
+        connection.getresponse.return_value.read.return_value = json.dumps(value).encode()
+        with mock.patch.object(agent, 'UnixHTTPConnection', return_value=connection):
+            self.assertEqual(agent.controller_inspect(row), expected)
+
+    def test_namespace_command_refuses_actual_host_namespace_before_subprocess(self):
+        row = config()
+        same = mock.Mock(st_dev=4, st_ino=19)
+        with mock.patch.object(agent, 'controller_inspect'), \
+                mock.patch.object(agent.os, 'open', return_value=91), \
+                mock.patch.object(agent.os, 'fstat', return_value=same), \
+                mock.patch.object(agent.os, 'stat', return_value=same), \
+                mock.patch.object(agent.os, 'close') as close, \
+                mock.patch.object(agent.subprocess, 'run') as run:
+            with self.assertRaisesRegex(agent.AgentError, 'shares host network namespace'):
+                agent.ns_command(row, ['iptables', '-I', 'OUTPUT'])
+        run.assert_not_called()
+        close.assert_called_once_with(91)
+
+    def test_namespace_command_pins_private_namespace_and_closes_descriptor(self):
+        row = config()
+        for fails in (False, True):
+            with self.subTest(fails=fails), \
+                    mock.patch.object(agent, 'controller_inspect') as inspect, \
+                    mock.patch.object(agent.os, 'open', return_value=91) as opened, \
+                    mock.patch.object(agent.os, 'fstat', return_value=mock.Mock(st_dev=4, st_ino=20)), \
+                    mock.patch.object(agent.os, 'stat', return_value=mock.Mock(st_dev=4, st_ino=19)), \
+                    mock.patch.object(agent.os, 'close') as close, \
+                    mock.patch.object(agent.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run:
+                if fails:
+                    run.side_effect = agent.subprocess.TimeoutExpired('nsenter', 10)
+                    with self.assertRaisesRegex(agent.AgentError, 'could not complete'):
+                        agent.ns_command(row, ['python3', '-V'])
+                else:
+                    agent.ns_command(row, ['python3', '-V'])
+                self.assertEqual(opened.call_args.args[0], '/proc/1234/ns/net')
+                self.assertEqual(run.call_args.args[0], [row['nsenter_path'], '--net=/proc/self/fd/91', 'python3', '-V'])
+                self.assertEqual(run.call_args.kwargs['pass_fds'], (91,))
+                self.assertEqual(inspect.call_count, 2)
+                close.assert_called_once_with(91)
+
     def test_receipt_binds_runtime_agent_sha(self):
         self.assertIn("agent_sha256", SCRIPT.read_text(encoding="utf-8"))
 

@@ -3,6 +3,9 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import shutil
+import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -41,6 +44,39 @@ def envelope(sequence=1, transport="direct_http"):
 
 
 class CapacityTelemetryInstallerTests(unittest.TestCase):
+    def test_native_transport_is_bound_by_a_real_ed25519_signature(self):
+        binary = shutil.which('ssh-keygen')
+        if not binary:
+            self.skipTest('ssh-keygen is required for real signature verification')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            key = root / 'test-key'
+            subprocess.run([binary, '-q', '-t', 'ed25519', '-N', '', '-f', str(key)],
+                           check=True, capture_output=True, timeout=10)
+            row = json.loads(envelope(transport='direct_https'))
+            payload_path = root / 'payload.json'
+            payload_path.write_bytes(installer.canonical_json(row['payload']))
+            subprocess.run([binary, '-q', '-Y', 'sign', '-f', str(key), '-n', installer.NAMESPACE,
+                            str(payload_path)], check=True, capture_output=True, timeout=10)
+            row['signature_base64'] = base64.b64encode(Path(str(payload_path) + '.sig').read_bytes()).decode()
+            public_key = Path(str(key) + '.pub').read_text().strip()
+            verified, _ = installer.verify(installer.canonical_json(row), row['signer'], public_key,
+                                           Path(binary), transport_profile='direct_https')
+            self.assertEqual(verified['transport_profile'], 'direct_https')
+            row['payload']['transport_profile'] = 'direct_http'
+            with self.assertRaisesRegex(installer.InstallError, 'signature is invalid'):
+                installer.verify(installer.canonical_json(row), row['signer'], public_key,
+                                 Path(binary), transport_profile='direct_http')
+
+    def test_native_tls_requires_explicit_receiver_profile_and_rejects_downgrade(self):
+        args = ('hangzhou-browser-agent', 'ssh-ed25519 ' + 'A' * 68, Path('/usr/bin/ssh-keygen'))
+        with mock.patch.object(installer.subprocess, 'run', return_value=mock.Mock(returncode=0)):
+            payload, _ = installer.verify(envelope(transport='direct_https'), *args, transport_profile='direct_https')
+            self.assertEqual(payload['transport_profile'], 'direct_https')
+            for actual, expected in (('direct_http', 'direct_https'), ('direct_https', 'direct_http'), ('compat_https', 'direct_https')):
+                with self.subTest(actual=actual, expected=expected), self.assertRaises(installer.InstallError):
+                    installer.verify(envelope(transport=actual), *args, transport_profile=expected)
+
     def test_verify_accepts_only_signed_direct_profile(self):
         with mock.patch.object(
             installer.subprocess, "run", return_value=mock.Mock(returncode=0)

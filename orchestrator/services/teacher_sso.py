@@ -42,6 +42,21 @@ def _sign(key: bytes, purpose: str, payload: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
+def _split_token(token: str) -> tuple[str, str]:
+    # Validate transport before ASCII encoding or compare_digest: malformed
+    # browser input must become an authentication error, not a TypeError/500.
+    if not isinstance(token, str) or len(token) > 4096 + 1 + 43:
+        raise ValueError("invalid SSO token encoding")
+    parts = token.split(".")
+    if (
+        len(parts) != 2
+        or not _TOKEN.fullmatch(parts[0])
+        or not re.fullmatch(r"[A-Za-z0-9_-]{43}", parts[1])
+    ):
+        raise ValueError("invalid SSO token encoding")
+    return parts[0], parts[1]
+
+
 def verify_hydro_ticket(
     ticket: str,
     key: str,
@@ -50,10 +65,7 @@ def verify_hydro_ticket(
     maximum_lifetime: int = 120,
 ) -> TeacherIdentity:
     """Verify the short-lived ticket emitted by the Hydro addon."""
-    try:
-        payload_text, signature = ticket.split(".", 1)
-    except ValueError as exc:
-        raise ValueError("malformed SSO ticket") from exc
+    payload_text, signature = _split_token(ticket)
     expected = _sign(key.encode("utf-8"), "ticket", payload_text)
     if not hmac.compare_digest(signature, expected):
         raise ValueError("invalid SSO ticket signature")
@@ -114,10 +126,7 @@ def issue_session(
 
 
 def verify_session(token: str, key: str, *, now: int | None = None) -> TeacherIdentity:
-    try:
-        payload_text, signature = token.split(".", 1)
-    except ValueError as exc:
-        raise ValueError("malformed teacher session") from exc
+    payload_text, signature = _split_token(token)
     expected = _sign(key.encode("utf-8"), "session", payload_text)
     if not hmac.compare_digest(signature, expected):
         raise ValueError("invalid teacher session signature")

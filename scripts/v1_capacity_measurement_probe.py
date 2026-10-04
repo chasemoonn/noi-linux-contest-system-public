@@ -122,8 +122,8 @@ def validate_config(value: Any) -> dict[str, Any]:
         r"NOI-V1-QUAL-[A-Z0-9]{16,64}", row["qualification_marker"]
     ):
         raise ProbeError("qualification marker is invalid")
-    if row["telemetry_transport_profile"] != "direct_http":
-        raise ProbeError("formal capacity telemetry must use the direct HTTP student path")
+    if row["telemetry_transport_profile"] not in {"direct_http", "direct_https"}:
+        raise ProbeError("formal capacity telemetry must use a frozen direct HTTP or HTTPS student path")
     if not isinstance(row["telemetry_seat_set_sha256"], str) or not HEX64.fullmatch(
         row["telemetry_seat_set_sha256"]
     ):

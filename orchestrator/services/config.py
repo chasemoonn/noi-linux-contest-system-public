@@ -10,11 +10,34 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from .gateway_tls import gateway_tls_enabled, gateway_tls_settings
+
 _ENV = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.:/-]+$")
 _SHA256_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 _ARTIFACT_SLUG = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+
+
+def desktop_pids_limit(server: dict) -> int:
+    """Bound Linux tasks (including threads), not just visible processes.
+
+    The supported GNOME/Firefox desktop exhausted the former 512-task limit
+    during ordinary browsing. Fail early rather than accepting a configuration
+    that only breaks once a contestant opens the submission page.
+    """
+    raw = server.get("pids_limit", 1024)
+    if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+        raise ValueError("contest_server.pids_limit 必须是整数")
+    if not re.fullmatch(r"[0-9]+", str(raw).strip()):
+        raise ValueError("contest_server.pids_limit 必须是整数")
+    value = int(raw)
+    if not 1024 <= value <= 65536:
+        raise ValueError(
+            "contest_server.pids_limit 必须在 1024 到 65536 之间；"
+            "GNOME/Firefox 桌面至少需要 1024，建议保留默认值"
+        )
+    return value
 
 
 def _expand(value: Any) -> Any:
@@ -131,8 +154,8 @@ def validate_config(cfg: dict) -> None:
             raise ValueError(
                 "cloud.aliyun.desktop_access port/priority/reconcile_seconds 必须是整数"
             ) from exc
-        if direct_port != 80:
-            raise ValueError("cloud.aliyun.desktop_access.port 必须是 80")
+        if direct_port not in {80, 443}:
+            raise ValueError("cloud.aliyun.desktop_access.port 必须是 80 或 443")
         if not 1 <= direct_priority <= 100:
             raise ValueError("cloud.aliyun.desktop_access.priority 必须在 1 到 100 之间")
         if not 1 <= reconcile_seconds <= 30:
@@ -153,6 +176,11 @@ def validate_config(cfg: dict) -> None:
             )
 
     server = _require(cfg, "contest_server")
+    desktop_pids_limit(server)
+    tls_enabled = gateway_tls_enabled(server)
+    tls_settings = gateway_tls_settings(server)
+    if tls_enabled and not desktop_access_enabled:
+        raise ValueError("gateway_tls 要求启用受管 desktop_access，学生端口只开放 443")
     for key in ("ssh_user", "ssh_key", "seats_root", "docker_image", "docker_network"):
         if not server.get(key):
             raise ValueError(f"配置为空: contest_server.{key}")
@@ -214,7 +242,12 @@ def validate_config(cfg: dict) -> None:
         raise ValueError(
             "contest_server.gateway_bind_address 必须是非回环 IPv4 地址"
         )
-    if desktop_access_enabled:
+    if desktop_access_enabled and tls_enabled:
+        if direct_port != 443:
+            raise ValueError("gateway_tls 模式的 desktop_access.port 必须是 443")
+    elif desktop_access_enabled:
+        if direct_port != 80:
+            raise ValueError("desktop_access.port=443 要求显式启用 gateway_tls")
         if int(server.get("gateway_listen", 80)) != direct_port:
             raise ValueError(
                 "contest_server.gateway_listen 必须与 "
@@ -293,6 +326,8 @@ def validate_config(cfg: dict) -> None:
         if not isinstance(hosts, list) or not hosts:
             raise ValueError("启用 Hydro 通知时必须配置 notify_allowed_https_hosts")
         notify_hosts = [str(value).strip().lower().rstrip(".") for value in hosts]
+        if tls_enabled and tls_settings['hostname'] not in notify_hosts:
+            raise ValueError("gateway_tls 桌面域名必须加入 notify_allowed_https_hosts")
 
     admin = _require(cfg, "orchestrator")
     if len(str(admin.get("admin_password", ""))) < 16:
@@ -525,4 +560,5 @@ def load_config(path: str | os.PathLike[str]) -> dict:
         raise ValueError("config.yaml 顶层必须是映射")
     cfg = _expand(raw)
     validate_config(cfg)
+    cfg["contest_server"]["pids_limit"] = desktop_pids_limit(cfg["contest_server"])
     return cfg

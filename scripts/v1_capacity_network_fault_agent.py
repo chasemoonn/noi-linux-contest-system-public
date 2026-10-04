@@ -205,6 +205,9 @@ def controller_inspect(config: dict) -> dict:
                 "restart_count": value.get("RestartCount")}
     if observed != expected or state.get("Running") is not True or state.get("Restarting") is not False:
         raise AgentError("network fault controller lifecycle changed")
+    mode = (value.get("HostConfig") or {}).get("NetworkMode")
+    if not isinstance(mode, str) or not mode or mode == "host" or mode.startswith("container:"):
+        raise AgentError("network fault requires a dedicated network namespace; host/shared modes are refused")
     return observed
 
 
@@ -222,12 +225,26 @@ def rule_args(config: dict) -> list[str]:
 
 def ns_command(config: dict, argv: list[str], *, ok=(0,)) -> subprocess.CompletedProcess:
     controller_inspect(config)
-    command = [config["nsenter_path"], "--target", str(config["controller"]["pid"]),
-               "--net"] + argv
-    try: result = subprocess.run(command, capture_output=True, check=False, timeout=10,
-                                 env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"})
+    descriptor = None
+    try:
+        # Pin the actual namespace, not a PID that could be recycled after inspection.
+        # The Docker network mode alone is not proof that it differs from the host.
+        descriptor = os.open(f"/proc/{config['controller']['pid']}/ns/net", os.O_RDONLY)
+        target = os.fstat(descriptor)
+        for host_path in ("/proc/self/ns/net", "/proc/1/ns/net"):
+            host = os.stat(host_path)
+            if (target.st_dev, target.st_ino) == (host.st_dev, host.st_ino):
+                raise AgentError("network fault controller shares host network namespace; no command executed")
+        controller_inspect(config)
+        command = [config["nsenter_path"], f"--net=/proc/self/fd/{descriptor}"] + argv
+        result = subprocess.run(command, capture_output=True, check=False, timeout=10,
+                                pass_fds=(descriptor,),
+                                env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"})
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise AgentError("network fault namespace command could not complete") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     if result.returncode not in ok:
         raise AgentError("network fault namespace command failed")
     return result

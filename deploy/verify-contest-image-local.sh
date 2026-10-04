@@ -5,6 +5,20 @@ image="${1:-noi-linux-official:2.0}"
 expected_source_revision="${2:-}"
 expected_iso_sha256='c8824240736352e5e4aaf3f6532b40961f75fa9f23d670bb78881355a49d5878'
 expected_desktop_contract='finalizer-status-v1'
+memory_mib="${NOI_VERIFY_MEMORY_MIB:-2560}"
+cpu_quota="${NOI_VERIFY_CPUS:-1.5}"
+
+# Record and exercise the intended seat limits, not just the host's resources.
+# Defaults match config.example.yaml; existing installations may be smaller.
+if [[ ! "${memory_mib}" =~ ^[1-9][0-9]{3,4}$ ]] \
+    || (( memory_mib < 1024 || memory_mib > 65536 )); then
+    echo "NOI_VERIFY_MEMORY_MIB must be an integer between 1024 and 65536" >&2
+    exit 2
+fi
+if [[ ! "${cpu_quota}" =~ ^[1-9][0-9]?(\.[0-9]{1,2})?$ ]]; then
+    echo "NOI_VERIFY_CPUS must be a positive quota of at least 1 CPU" >&2
+    exit 2
+fi
 
 if [[ -n "${expected_source_revision}" \
     && ! "${expected_source_revision}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -76,8 +90,9 @@ if [[ "${image_contract}" != "${expected_desktop_contract}" ]]; then
     exit 1
 fi
 for label_and_value in \
+    'org.noi.desktop.reconnect=bounded-network-retry-v1' \
     'org.noi.desktop.input-fidelity=ibus-explicit-switch-v2' \
-    'org.noi.desktop.keyboard-fidelity=numpad-and-stale-modifier-v1' \
+    'org.noi.desktop.keyboard-fidelity=numpad-and-stale-modifier-v2' \
     'org.noi.desktop.student-ux=canonical-source-and-geany-run-v2'; do
     label="${label_and_value%%=*}"
     expected="${label_and_value#*=}"
@@ -119,6 +134,18 @@ docker run --rm --entrypoint /bin/bash "${image}" -lc '
         "test -x /bin/bash && test -r /etc/xdg/autostart/noi-contest-desktop-finalize.desktop"
 '
 
+# Check the packaged default before booting GNOME. A successful font override
+# in a test user's home alone does not establish a new-seat image fix.
+docker run --rm --network none --entrypoint python3 "${image}" -c '
+import configparser
+from pathlib import Path
+config = configparser.ConfigParser(interpolation=None, strict=True)
+assert "contestBoundedReconnectV1" in Path("/usr/share/novnc/app/ui.js").read_text(), "missing packaged reconnect patch"
+config.read("/usr/share/geany/filedefs/filetypes.common")
+assert config.get("styling", "line_height") == "0;2;", "Geany underscore clipping default is not fixed"
+assert not (Path("/home/student/.config/geany/filedefs/filetypes.common").exists()), "unexpected baked student style override"
+'
+
 seat_root="${test_root}/v1"
 install -d -m 0755 \
     "${seat_root}/answers" \
@@ -138,11 +165,13 @@ chmod 0444 "${seat_root}/materials/paper.pdf" \
     "${seat_root}/testdata/banana/1.in" \
     "${seat_root}/testdata/banana/1.out"
 
+printf 'desktop_test_limits memory_mib=%s cpus=%s pids=1024 shm=1g\n' \
+    "${memory_mib}" "${cpu_quota}"
 docker run -d --name "${container_name}" \
-    --memory 2560m --memory-swap 2560m --cpus 1.5 \
+    --memory "${memory_mib}m" --memory-swap "${memory_mib}m" --cpus "${cpu_quota}" \
     --pids-limit 1024 --shm-size 1g \
     -e STUDENT_PASSWORD=testpass -e VNC_PASSWORD=testpass \
-    -e CANDIDATE_ID=BJ0001 -e PROBLEM_NAMES=apple,banana \
+    -e CANDIDATE_ID=CSP001 -e PROBLEM_NAMES=apple,banana \
     -e SUBMISSION_MODE=both -e HAS_TEST_DATA=1 \
     -e WEB_SUBMIT_URL=http://172.20.0.1:18082/submit/test-token \
     -e RESOLUTION=1366x768 -e FRAME_RATE=30 \
@@ -230,16 +259,16 @@ for name in "${containers[@]}"; do
     docker exec -u student "${name}" test -w \
         '/run/contest-materials/03_答案文件夹'
     docker exec -u student "${name}" test -w \
-        '/home/student/答案/BJ0001/apple'
+        '/home/student/答案/CSP001/apple'
     docker exec -u student "${name}" test -w \
-        '/home/student/答案/BJ0001/banana'
+        '/home/student/答案/CSP001/banana'
     for problem in apple banana; do
         docker exec "${name}" test -f \
-            "/home/student/答案/BJ0001/${problem}/${problem}.cpp"
+            "/home/student/答案/CSP001/${problem}/${problem}.cpp"
         docker exec "${name}" test ! -L \
-            "/home/student/答案/BJ0001/${problem}/${problem}.cpp"
+            "/home/student/答案/CSP001/${problem}/${problem}.cpp"
         docker exec -u student "${name}" test -w \
-            "/home/student/答案/BJ0001/${problem}/${problem}.cpp"
+            "/home/student/答案/CSP001/${problem}/${problem}.cpp"
     done
     docker exec "${name}" test -x \
         '/run/contest-materials/03_开始答题.sh'
@@ -294,6 +323,70 @@ docker exec "${container_name}" grep -Fq \
     'http://172.20.0.1:18082/submit/test-token' \
     '/run/contest-materials/04_CSP程序回收系统.html'
 
+# Use the real student's permissions and the actual Geany command definitions.
+# This proves compile/build, executable launch, CSP file I/O and byte-exact source
+# collection inside the desktop image. It does not simulate pressing GUI F5 or
+# claim to validate the browser/IME keyboard path; that remains human acceptance.
+docker exec -i -u student -e HOME=/home/student "${container_name}" \
+    python3 - <<'STUDENT_WORKFLOW_PY'
+import base64
+import configparser
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+
+assert os.getuid() != 0, "workflow must run as the student"
+assert os.environ.get("CANDIDATE_ID") == "CSP001", "unexpected test identity"
+assert os.environ.get("WEB_SUBMIT_URL") == "http://172.20.0.1:18082/submit/test-token"
+home = Path("/home/student")
+config = configparser.ConfigParser(interpolation=None)
+assert config.read(str(home / ".config/geany/filedefs/filetypes.cpp")), "missing Geany C++ definitions"
+commands = config["build-menu"]
+for problem, compile_key in (("apple", "FT_00_CM"), ("banana", "FT_01_CM")):
+    cwd = home / "答案" / "CSP001" / problem
+    cpp = cwd / (problem + ".cpp")
+    assert cpp.is_file() and not cpp.is_symlink(), "canonical source was not created"
+    source = (
+        '#include <cstdio>\n#include <iostream>\n'
+        '// 中文注释：下划线变量与文件读写\n'
+        'int main() {\n'
+        '    if (!std::freopen("' + problem + '.in", "r", stdin)) return 2;\n'
+        '    if (!std::freopen("' + problem + '.out", "w", stdout)) return 3;\n'
+        '    long long first_value, second_value;\n'
+        '    if (!(std::cin >> first_value >> second_value)) return 4;\n'
+        '    std::cout << first_value + second_value << "\\n";\n'
+        '    return 0;\n}\n'
+    ).encode("utf-8")
+    cpp.write_bytes(source)
+    assert (cwd / (problem + ".in")).read_bytes() == (
+        home / "测试数据" / problem / "1.in"
+    ).read_bytes(), "sample input was not copied to the work directory"
+    for command_key in (compile_key, "EX_00_CM"):
+        command = commands[command_key].replace("%e", problem).replace("%f", cpp.name)
+        subprocess.run(
+            shlex.split(command), cwd=str(cwd), check=True,
+            stdout=subprocess.PIPE,
+            timeout=30 if command_key == compile_key else 5,
+        )
+    assert (cwd / (problem + ".out")).read_bytes() == (
+        home / "测试数据" / problem / "1.out"
+    ).read_bytes(), "compiled program produced incorrect file output"
+    result = subprocess.run(
+        ["python3", "/usr/local/bin/capture-formal-source.py",
+         str(home / "答案"), "CSP001", problem, "102400"],
+        check=True, stdout=subprocess.PIPE, timeout=10,
+    )
+    snapshot = json.loads(result.stdout)
+    assert snapshot["size"] == len(source)
+    assert snapshot["sha256"] == hashlib.sha256(source).hexdigest()
+    assert base64.b64decode(snapshot["base64"], validate=True) == source
+    assert cpp.read_bytes() == source, "compile/run/capture changed the saved source"
+    print("student_compile_run_capture_verified", problem, snapshot["sha256"], flush=True)
+STUDENT_WORKFLOW_PY
+
 # Exercise the real Firefox 79 cookie engine, not merely the JSON source. The
 # probe verifies a first-party HttpOnly/SameSite=Strict cookie across a 303,
 # rejects a third-party cookie, and survives a normal-mode browser restart.
@@ -306,14 +399,14 @@ docker exec -u student -e HOME=/home/student "${container_name}" \
 # directories, and refuses to follow a problem-directory symlink.
 docker exec -u student -e HOME=/home/student "${container_name}" sh -lc '
     printf "// restart-preservation-sentinel\n" \
-        > "$HOME/答案/BJ0001/apple/apple.cpp"
+        > "$HOME/答案/CSP001/apple/apple.cpp"
     for path in .config .vnc Desktop; do
         mv -- "$HOME/${path}" "$HOME/${path}.before-restart"
         ln -s "$HOME/答案" "$HOME/${path}"
     done
-    mv -- "$HOME/答案/BJ0001/banana" \
-        "$HOME/答案/BJ0001/banana.before-restart"
-    ln -s "$HOME/答案/BJ0001/apple" "$HOME/答案/BJ0001/banana"
+    mv -- "$HOME/答案/CSP001/banana" \
+        "$HOME/答案/CSP001/banana.before-restart"
+    ln -s "$HOME/答案/CSP001/apple" "$HOME/答案/CSP001/banana"
 '
 docker restart "${container_name}" >/dev/null
 for _attempt in $(seq 1 90); do
@@ -332,15 +425,15 @@ for path in .config .vnc Desktop; do
     docker exec "${container_name}" test -d "/home/student/${path}.before-restart"
     docker exec "${container_name}" test -L "/home/student/${path}.student-backup"
 done
-docker exec "${container_name}" test -d '/home/student/答案/BJ0001/banana'
-docker exec "${container_name}" test ! -L '/home/student/答案/BJ0001/banana'
+docker exec "${container_name}" test -d '/home/student/答案/CSP001/banana'
+docker exec "${container_name}" test ! -L '/home/student/答案/CSP001/banana'
 docker exec "${container_name}" test -L \
-    '/home/student/答案/BJ0001/banana.student-backup'
+    '/home/student/答案/CSP001/banana.student-backup'
 docker exec "${container_name}" grep -Fqx \
     '// restart-preservation-sentinel' \
-    '/home/student/答案/BJ0001/apple/apple.cpp'
+    '/home/student/答案/CSP001/apple/apple.cpp'
 docker exec "${container_name}" test -f \
-    '/home/student/答案/BJ0001/banana.before-restart/banana.cpp'
+    '/home/student/答案/CSP001/banana.before-restart/banana.cpp'
 docker exec "${container_name}" test -L \
     '/home/student/比赛资料（从这里开始）'
 docker exec "${container_name}" test -L \
@@ -367,6 +460,9 @@ docker exec -u student "${container_name}" test -w \
 
 docker exec "${container_name}" g++ --version | head -n1
 docker exec "${container_name}" sh -lc 'command -v firefox'
+docker stats --no-stream --format 'desktop_resources memory={{.MemUsage}} pids={{.PIDs}}' \
+    "${container_name}"
+test "$(docker inspect "${container_name}" --format '{{.State.OOMKilled}}')" = false
 docker image inspect "${image}" \
     --format 'image={{.Id}} size={{.Size}} created={{.Created}}'
 echo official_image_v1_contract_verified

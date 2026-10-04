@@ -1188,6 +1188,67 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(due["id"], first["id"])
         self.assertNotEqual(due["id"], second["id"])
 
+    def test_ambiguous_predecessor_blocks_only_its_lane_until_exact_resolution(self):
+        tid = "9" * 24
+        other_tid = "8" * 24
+        for contest_id in (tid, other_tid):
+            self.store.upsert_contest(contest_id, "test", ["apple"], {"apple": "P1"})
+        first = self._enqueue(tid, "a-first", submission_id="a" * 64)
+        second = self._enqueue(tid, "b-second", submission_id="b" * 64)
+        other_contest = self._enqueue(other_tid, "c-other", submission_id="c" * 64)
+        claimed = self.store.claim_next_web_submission(now=100)
+        self.store.mark_web_submission_failed(
+            first["id"], claimed["lease_token"], "unknown insert result",
+            retry_at=None, ambiguous=True, resolution_after=102,
+        )
+        self.assertIsNone(self.store.claim_next_web_submission(now=101, tid=tid))
+        restarted = Store(str(Path(self.temp.name) / "state.db"))
+        try:
+            self.assertIsNone(restarted.claim_next_web_submission(now=101, tid=tid))
+            self.assertEqual(restarted.ambiguous_web_submission_blocker(second["id"]), first["id"])
+        finally:
+            restarted.close()
+        self.assertEqual(self.store.claim_next_web_submission(now=101)["id"], other_contest["id"])
+        self.store.finish_ambiguous_web_submission(
+            first["id"], first["submission_id"], resolution_status="missing", now=102,
+        )
+        self.assertIsNone(self.store.claim_next_web_submission(now=103, tid=tid))
+        self.store.finish_ambiguous_web_submission(
+            first["id"], first["submission_id"], rid="1" * 24, now=104,
+        )
+        second_claim = self.store.claim_next_web_submission(now=104, tid=tid)
+        self.assertEqual(second_claim["id"], second["id"])
+        self.store.mark_web_submission_failed(
+            second["id"], second_claim["lease_token"], "later unknown result",
+            retry_at=None, ambiguous=True, resolution_after=106,
+        )
+        self.assertIsNone(self.store.ambiguous_web_submission_blocker(first["id"]))
+
+    def test_ambiguous_lane_blocker_is_scoped_to_contest_user_problem_and_order(self):
+        tid = "9" * 24
+        self.store.upsert_contest(tid, "test", ["apple", "banana"], {"apple": "P1", "banana": "P2"})
+        first = self._enqueue(tid, "a-first", submission_id="a" * 64)
+        second = self._enqueue(tid, "b-second", submission_id="b" * 64)
+        claimed = self.store.claim_next_web_submission(now=100)
+        self.store.mark_web_submission_failed(
+            first["id"], claimed["lease_token"], "unknown insert result",
+            retry_at=None, ambiguous=True, resolution_after=102,
+        )
+        for number, uid, problem, pid in ((3, 8, "apple", "P1"), (4, 7, "banana", "P2")):
+            row = self.store.enqueue_web_submission(
+                tid, uid, problem, "other lane", client_nonce=f"other-{number}",
+                submission_id=str(number) * 64,
+                submission_session=self.store.get_contest(tid)["submission_session"],
+                judge_pid=pid, judge_lang="cc", judge_source="other lane", issues=(),
+                accepted_at_ms=1_786_080_000_000,
+            )
+            self.assertIsNone(self.store.ambiguous_web_submission_blocker(row["id"]))
+            selected = self.store.claim_next_web_submission(now=101, tid=tid, uid=uid, problem=problem)
+            self.assertEqual(selected["id"], row["id"])
+        self.assertEqual(self.store.ambiguous_web_submission_blocker(first["id"]), first["id"])
+        self.assertEqual(self.store.ambiguous_web_submission_blocker(second["id"]), first["id"])
+        self.assertEqual(self.store.get_web_submission(second["id"])["judge_state"], "pending")
+
     def test_final_requeue_resets_unfinished_lane_and_invalidates_old_lease(self):
         tid = "a" * 24
         self.store.upsert_contest(tid, "test", ["apple"], {"apple": "P1"})

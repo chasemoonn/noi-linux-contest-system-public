@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 
 
@@ -131,6 +132,18 @@ class NoVNCContestInputPatchTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unexpected noVNC"):
             self.patcher.patch_util("export function unknown() {}\n")
 
+    def test_invalid_tree_is_rejected_before_any_file_is_changed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_root = root/'usr/share/novnc/core/input'
+            input_root.mkdir(parents=True)
+            source = "export function getKey(evt) {\n    // Are we getting a proper key value?\n}\n"
+            (input_root/'util.js').write_text(source)
+            (input_root/'keyboard.js').write_text('unsupported keyboard source')
+            with self.assertRaisesRegex(RuntimeError,'unexpected noVNC'):
+                self.patcher.patch_tree(root)
+            self.assertEqual((input_root/'util.js').read_text(),source)
+
     def test_official_image_build_applies_and_labels_patch(self):
         dockerfile = (ROOT / "noi-linux-official" / "Dockerfile").read_text(
             encoding="utf-8"
@@ -139,7 +152,7 @@ class NoVNCContestInputPatchTests(unittest.TestCase):
             "patch-novnc-contest-input.py",
             "contestNumpadKeys",
             "contestSyncModifiers",
-            "numpad-and-stale-modifier-v1",
+            "numpad-and-stale-modifier-v2",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, dockerfile)

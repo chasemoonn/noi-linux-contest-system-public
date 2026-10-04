@@ -49,6 +49,28 @@ def valid_config():
 
 
 class CapacityMeasurementProbeTests(unittest.TestCase):
+    def test_configuration_accepts_native_tls_but_not_compatibility_proxy(self):
+        value = valid_config()
+        value['telemetry_transport_profile'] = 'direct_https'
+        self.assertEqual(probe.validate_config(value)['telemetry_transport_profile'], 'direct_https')
+        value['telemetry_transport_profile'] = 'compat_https'
+        with self.assertRaises(probe.ProbeError):
+            probe.validate_config(value)
+
+    def test_signed_tls_telemetry_must_match_the_frozen_transport(self):
+        from tests.test_v1_capacity_telemetry_installer import envelope
+        value = valid_config()
+        value['telemetry_transport_profile'] = 'direct_https'
+        now = datetime(2026, 8, 13, 0, 0, 10, tzinfo=timezone.utc)
+        with mock.patch.object(probe, 'read_private_file', return_value=envelope(transport='direct_https')), \
+                mock.patch.object(probe, 'require_root_binary', return_value=Path('/usr/bin/ssh-keygen')), \
+                mock.patch.object(probe.subprocess, 'run', return_value=mock.Mock(returncode=0)):
+            row, _ = probe.verify_telemetry(value, now)
+            self.assertEqual(row['transport_profile'], 'direct_https')
+        with mock.patch.object(probe, 'read_private_file', return_value=envelope(transport='direct_http')):
+            with self.assertRaisesRegex(probe.ProbeError, 'transport profile differs'):
+                probe.verify_telemetry(value, now)
+
     def test_configuration_binds_exactly_seventeen_unique_containers(self):
         value = valid_config()
         value["container_ids"] = value["container_ids"][:-1]

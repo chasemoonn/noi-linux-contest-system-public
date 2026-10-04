@@ -321,6 +321,8 @@ def main() -> int:
     capacity_probe_builder = source("scripts/build_v1_capacity_probe.py")
     capacity_probe = source("scripts/v1_capacity_measurement_probe.py")
     capacity_browser_agent = source("capacity-browser-agent/agent.mjs")
+    capacity_browser_echo = source("capacity-browser-agent/echo-probe.mjs")
+    capacity_remote_echo = source("capacity-browser-agent/remote-echo.html")
     capacity_browser_library = source("capacity-browser-agent/lib.mjs")
     capacity_browser_package = source("capacity-browser-agent/package.json")
     capacity_browser_lock = source("capacity-browser-agent/package-lock.json")
@@ -769,7 +771,9 @@ def main() -> int:
     require(
         "controller_probe_target_sha256" in capacity_network_schema
         and "signing_public_key" in capacity_network_schema
-        and '"--net"' in capacity_network_agent
+        and "--net=/proc/self/fd/" in capacity_network_agent
+        and "host/shared modes are refused" in capacity_network_agent
+        and "controller shares host network namespace; no command executed" in capacity_network_agent
         and '"OUTPUT"' in capacity_network_agent
         and '"REJECT"' in capacity_network_agent
         and "stale network fault state was recovered" in capacity_network_agent
@@ -1100,13 +1104,24 @@ def main() -> int:
         "playwright" in capacity_browser_package
         and '"playwright": "1.62.0"' in capacity_browser_lock
         and "page.on('websocket'" in capacity_browser_agent
-        and "page.keyboard.press" in capacity_browser_agent
+        and "measureRemoteEcho" in capacity_browser_agent
+        and "page.keyboard.press" in capacity_browser_echo
+        and "unexpected remote acknowledgment" in capacity_browser_echo
+        and "performance.now() - p.sent" in capacity_browser_echo
+        and "counter++;lastKey=code;draw()" in capacity_remote_echo
+        and "__noiV1FrameState" not in capacity_browser_agent
         and "seatSetSha256" in capacity_browser_library
         and "requireTrustedExecutable" in capacity_browser_library
         and "dedicated non-root Linux user" in capacity_browser_agent
         and "qualification_marker" in capacity_browser_schema
         and "seat_set_sha256" in capacity_browser_schema
         and "direct_http" in capacity_browser_schema
+        and "direct_https" in capacity_browser_schema
+        and "direct_endpoint_ipv4" in capacity_browser_library
+        and "verifyDirectNavigation" in capacity_browser_agent
+        and "assertSeatSockets" in capacity_browser_agent
+        and "measureDirectTlsRtt" in capacity_browser_agent
+        and "--transport-profile" in capacity_telemetry_installer
         and "formal_seat_count: 15" in capacity_browser_agent
         and "seat_urls" in capacity_browser_schema
         and "telemetry_transport_profile" in capacity_probe

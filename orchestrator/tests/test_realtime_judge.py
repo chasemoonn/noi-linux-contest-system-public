@@ -319,6 +319,41 @@ class RealtimeJudgeTests(unittest.TestCase):
             recovered_submitter.resolution_calls, [queued["submission_id"]]
         )
 
+    def test_ambiguous_predecessor_preserves_later_source_and_resumes_without_replay(self):
+        submitter = FakeSubmitter(
+            [{"ok": False, "retryable": False, "ambiguous": True},
+             {"ok": True, "rid": "2" * 24}],
+            resolution_results=[{"ok": True, "status": "resolved", "rid": "1" * 24}],
+        )
+        judge = RealtimeJudge(self.store, submitter, clock=self.clock, sleeper=self.clock.sleep)
+        first = self.enqueue(judge, "unknown-first", "old code")
+        target = self.enqueue(judge, "saved-latest", "new code")
+        self.assertEqual(judge.process_once()["judge_state"], "ambiguous")
+        self.assertIsNone(judge.process_once())
+        self.assertEqual(self.store.latest_web_submissions(self.tid, 7)["apple"]["source"], "new code")
+        self.clock.sleep(2)
+        judge.resolve_ambiguous_once()
+        self.assertEqual(judge.process_once()["rid"], "2" * 24)
+        self.assertEqual([call["submission_id"] for call in submitter.calls],
+                         [first["submission_id"], target["submission_id"]])
+        self.assertEqual(submitter.resolution_calls, [first["submission_id"]])
+
+    def test_final_collection_reports_an_ambiguous_predecessor_without_replay_or_wait(self):
+        judge, submitter = self.make_judge([
+            {"ok": False, "retryable": False, "ambiguous": True},
+            {"ok": True, "rid": "2" * 24},
+        ])
+        first = self.enqueue(judge, "unknown-first", "old code")
+        target = self.enqueue(judge, "saved-latest", "new code")
+        judge.process_once()
+        before_time = self.clock()
+        with self.assertRaisesRegex(RealtimeJudgeAmbiguousError, "待核对"):
+            judge.ensure_submitted(target["id"], timeout_seconds=5)
+        self.assertEqual(self.clock(), before_time)
+        self.assertEqual(len(submitter.calls), 1)
+        self.assertEqual(self.store.get_web_submission(first["id"])["judge_state"], "ambiguous")
+        self.assertEqual(self.store.get_web_submission(target["id"])["source"], "new code")
+
     def test_ensure_submitted_processes_older_lane_rows_first(self):
         judge, submitter = self.make_judge(
             [

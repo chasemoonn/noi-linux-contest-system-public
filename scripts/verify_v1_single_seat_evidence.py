@@ -68,6 +68,11 @@ OBSERVATION_KEYS = {
     },
     "cutoff_submit": {
         "deadline_state",
+        "submission_policy",
+        "fallback_problem_slug",
+        "fallback_source_sha256",
+        "fallback_rid",
+        "fallback_web_submission_count",
         "final_rid",
         "final_submission_id",
         "frozen_source_sha256",
@@ -75,6 +80,9 @@ OBSERVATION_KEYS = {
         "supplemental_submitted",
     },
     "oj_record": {
+        "fallback_problem_slug",
+        "fallback_source_sha256",
+        "fallback_rid",
         "final_rid",
         "final_source_sha256",
         "final_score_source",
@@ -85,6 +93,9 @@ OBSERVATION_KEYS = {
         "teacher_source_visible",
     },
     "collection": {
+        "fallback_problem_slug",
+        "fallback_source_sha256",
+        "fallback_rid",
         "archive_manifest_sha256",
         "collection_receipt_sha256",
         "delivery_safe",
@@ -255,6 +266,10 @@ def validate_ordinary_oj(value, label: str = "ordinary_oj") -> dict:
 
 def validate_observations(phase: str, value, context: dict) -> dict:
     row = exact(value, OBSERVATION_KEYS[phase], f"{phase}.observations")
+    if phase in ("cutoff_submit", "oj_record", "collection"):
+        require_string(row["fallback_problem_slug"], SLUG, f"{phase}.fallback_problem_slug")
+        require_string(row["fallback_source_sha256"], HEX64, f"{phase}.fallback_source_sha256")
+        require_string(row["fallback_rid"], HEX24, f"{phase}.fallback_rid")
     slug = context["problem_slug"]
     candidate = context["seat_candidate"]
     if phase == "materials":
@@ -313,10 +328,14 @@ def validate_observations(phase: str, value, context: dict) -> dict:
         for name in ("frozen_source_sha256", "last_confirmed_source_sha256", "final_submission_id"):
             require_string(row[name], HEX64, f"cutoff_submit.{name}")
         require_string(row["final_rid"], HEX24, "cutoff_submit.final_rid")
+        if row["submission_policy"] != "web-priority-with-folder-fallback-v1":
+            raise EvidenceError("cutoff submission policy must preserve web priority")
         if row["deadline_state"] != "frozen" or row["supplemental_submitted"] is not True:
-            raise EvidenceError("cutoff must freeze and submit a changed final source")
+            raise EvidenceError("cutoff must freeze and submit the folder-only fallback")
+        if require_int(row["fallback_web_submission_count"], "fallback_web_submission_count", 0) != 0:
+            raise EvidenceError("folder fallback requires no web submissions for that problem")
         if row["frozen_source_sha256"] == row["last_confirmed_source_sha256"]:
-            raise EvidenceError("cutoff rehearsal must exercise the changed-source supplement")
+            raise EvidenceError("cutoff rehearsal must exercise a changed local folder without replacing web source")
     elif phase == "oj_record":
         for name in ("manual_source_sha256", "final_source_sha256"):
             require_string(row[name], HEX64, f"oj_record.{name}")
@@ -553,16 +572,26 @@ def combine(facts: dict[str, dict], digests: dict[str, str], expected_revision: 
         raise EvidenceError("compiled source differs from the manual submission")
     if cutoff["last_confirmed_source_sha256"] != manual["source_sha256"]:
         raise EvidenceError("cutoff evidence is not based on the confirmed manual submission")
+    if cutoff["final_rid"] != manual["rid"] or cutoff["final_submission_id"] != manual["submission_id"]:
+        raise EvidenceError("cutoff must reuse the confirmed web receipt and RID")
+    if cutoff["fallback_problem_slug"] == facts["cutoff_submit"]["context"]["problem_slug"]:
+        raise EvidenceError("folder fallback must target a different problem without web submissions")
+    if cutoff["fallback_rid"] == manual["rid"]:
+        raise EvidenceError("folder fallback requires a distinct native RID")
+    for phase_row in (oj, collection):
+        for field in ("fallback_problem_slug", "fallback_source_sha256", "fallback_rid"):
+            if phase_row[field] != cutoff[field]:
+                raise EvidenceError("OJ and collection must bind the exact folder fallback problem, source and RID")
     if (
         oj["manual_rid"] != manual["rid"]
         or oj["manual_source_sha256"] != manual["source_sha256"]
         or oj["final_rid"] != cutoff["final_rid"]
-        or oj["final_source_sha256"] != cutoff["frozen_source_sha256"]
+        or oj["final_source_sha256"] != manual["source_sha256"]
     ):
         raise EvidenceError("OJ records do not bind both submitted source versions")
     if (
         collection["final_rid"] != cutoff["final_rid"]
-        or collection["final_source_sha256"] != cutoff["frozen_source_sha256"]
+        or collection["final_source_sha256"] != manual["source_sha256"]
         or shutdown["collection_receipt_sha256"] != collection["collection_receipt_sha256"]
     ):
         raise EvidenceError("collection and shutdown do not bind the final source and receipt")
@@ -579,6 +608,7 @@ def combine(facts: dict[str, dict], digests: dict[str, str], expected_revision: 
         raise EvidenceError("test contest cleanup exceeded the 30-minute boundary")
     return {
         "$schema": "v1-single-seat-evidence.schema.json",
+        "submission_policy": "web-priority-with-folder-fallback-v1",
         "schema_version": 1,
         "status": "passed",
         "session_id": next(iter(sessions)),
@@ -599,11 +629,13 @@ def combine(facts: dict[str, dict], digests: dict[str, str], expected_revision: 
 def validate_combined(document, *, expected_revision: str | None = None, expected_components: dict | None = None) -> dict:
     evidence = exact(
         document,
-        {"$schema", "schema_version", "status", "session_id", "source", "components", "context", "checks", "ordinary_oj_isolation", "facts"},
+        {"$schema", "schema_version", "submission_policy", "status", "session_id", "source", "components", "context", "checks", "ordinary_oj_isolation", "facts"},
         "single-seat evidence",
     )
     if evidence["$schema"] != "v1-single-seat-evidence.schema.json" or evidence["schema_version"] != 1 or evidence["status"] != "passed":
         raise EvidenceError("unsupported or non-passed single-seat evidence")
+    if evidence["submission_policy"] != "web-priority-with-folder-fallback-v1":
+        raise EvidenceError("unsupported single-seat submission policy")
     require_string(evidence["session_id"], HEX64, "session_id")
     source = validate_source(evidence["source"])
     components = validate_components(evidence["components"])

@@ -121,8 +121,50 @@ class SingleSeatCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(component_tool.ComponentError, "file set"):
                 component_tool.plugin_digest(root)
 
-    def test_deployed_plugin_tree_is_exactly_two_files(self):
-        self.assertEqual(component_tool.PLUGIN_FILES, ("index.js", "package.json"))
+    def test_deployed_plugin_tree_includes_installed_teacher_template(self):
+        installed = ("index.js", "package.json", "templates/orchestrator_teacher_home.html",
+                     "locale/zh.yaml", "locale/en.yaml")
+        self.assertEqual(component_tool.PLUGIN_FILES, installed)
+        installer = (ROOT / 'deploy/install-hydro-orchestrator-addon.sh').read_text(encoding='utf-8')
+        for relative in installed:
+            self.assertIn('${source_dir}/' + relative, installer)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in installed:
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((ROOT / 'hydro-plugin-orchestrator' / relative).read_bytes())
+            before = component_tool.plugin_digest(root)
+            template = root / installed[2]
+            template.write_bytes(template.read_bytes() + b'\n<!-- changed -->')
+            self.assertNotEqual(before, component_tool.plugin_digest(root))
+            for relative in installed[3:]:
+                before = component_tool.plugin_digest(root)
+                asset = root / relative
+                asset.write_bytes(asset.read_bytes() + b'\n# changed\n')
+                self.assertNotEqual(before, component_tool.plugin_digest(root))
+            template.unlink()
+            with self.assertRaisesRegex(component_tool.ComponentError, 'file set'):
+                component_tool.plugin_digest(root)
+
+    def test_component_plugin_digest_rejects_unexpected_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in ("index.js", "package.json", "templates/orchestrator_teacher_home.html",
+                             "locale/zh.yaml", "locale/en.yaml"):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'test')
+            (root / 'unexpected').mkdir()
+            with self.assertRaisesRegex(component_tool.ComponentError, 'file set'):
+                component_tool.plugin_digest(root)
+
+    def test_component_file_read_preserves_crlf_and_control_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = b'line1\r\nline2\x1aline3\r\n'
+            (root / 'index.js').write_bytes(raw)
+            self.assertEqual(component_tool.read_plugin_file(root, 'index.js'), raw)
 
     def test_component_collector_rejects_unsafe_container_name(self):
         self.assertIsNone(component_tool.CONTAINER_NAME.fullmatch("seat;docker-stop"))

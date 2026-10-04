@@ -106,7 +106,10 @@ def existing_sequence(path: Path) -> int:
         raise InstallError("existing telemetry is invalid") from exc
 
 
-def verify(raw: bytes, signer: str, public_key: str, ssh_keygen: Path) -> tuple[dict, bytes]:
+def verify(raw: bytes, signer: str, public_key: str, ssh_keygen: Path,
+           *, transport_profile: str = "direct_http") -> tuple[dict, bytes]:
+    if transport_profile not in {"direct_http", "direct_https"}:
+        raise InstallError("receiver transport profile is invalid")
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -125,7 +128,7 @@ def verify(raw: bytes, signer: str, public_key: str, ssh_keygen: Path) -> tuple[
             "websocket_reconnects", "key_to_frame_samples_ms",
         }, "telemetry payload"
     )
-    if payload["schema_version"] != 1 or payload["transport_profile"] != "direct_http" or \
+    if payload["schema_version"] != 1 or payload["transport_profile"] != transport_profile or \
             not isinstance(payload["qualification_marker"], str) or \
             not MARKER.fullmatch(payload["qualification_marker"]) or \
             not isinstance(payload["seat_set_sha256"], str) or \
@@ -155,12 +158,13 @@ def verify(raw: bytes, signer: str, public_key: str, ssh_keygen: Path) -> tuple[
     return payload, canonical_json(envelope)
 
 
-def install(raw: bytes, output: Path, signer: str, public_key: str, ssh_keygen: Path) -> int:
+def install(raw: bytes, output: Path, signer: str, public_key: str, ssh_keygen: Path,
+            *, transport_profile: str = "direct_http") -> int:
     if not SIGNER.fullmatch(signer) or not SSH_PUBLIC_KEY.fullmatch(public_key):
         raise InstallError("signer configuration is invalid")
     parent = require_root_directory(output.parent)
     ssh_keygen = require_root_binary(ssh_keygen)
-    payload, normalized = verify(raw, signer, public_key, ssh_keygen)
+    payload, normalized = verify(raw, signer, public_key, ssh_keygen, transport_profile=transport_profile)
     prior = existing_sequence(output)
     if payload["sequence"] <= prior:
         raise InstallError("telemetry sequence did not advance")
@@ -203,11 +207,13 @@ def main() -> int:
         parser.add_argument("--signer", required=True)
         parser.add_argument("--public-key", required=True)
         parser.add_argument("--ssh-keygen", default="/usr/bin/ssh-keygen", type=Path)
+        parser.add_argument("--transport-profile", choices=("direct_http", "direct_https"), default="direct_http")
         args = parser.parse_args()
         raw = sys.stdin.buffer.read(1024 * 1024 + 1)
         if not raw or len(raw) > 1024 * 1024:
             raise InstallError("telemetry envelope size is invalid")
-        sequence = install(raw, args.output, args.signer, args.public_key, args.ssh_keygen)
+        sequence = install(raw, args.output, args.signer, args.public_key, args.ssh_keygen,
+                           transport_profile=args.transport_profile)
         print(f"TELEMETRY_INSTALLED sequence={sequence}")
         return 0
     finally:

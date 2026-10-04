@@ -173,10 +173,12 @@ CI 使用 Linux root 运行 `run_v1_linux_ci.py`，在 root-only 临时目录内
 
 ## 主要文档
 
+- [当前线上版本与剩余验收](docs/CURRENT_RELEASE.md)
 - [V1 产品契约](docs/V1_PRODUCT_CONTRACT.md)
 - [产品说明](docs/PRODUCT.md)
 - [教师办赛指南](docs/TEACHER_GUIDE.md)
 - [支持矩阵](docs/SUPPORT_MATRIX.md)
+- [商业试点与交付验收清单](docs/COMMERCIAL_READINESS.md)
 - [部署说明](deploy/DEPLOYMENT.md)
 - [比赛运行手册](deploy/CONTEST_RUNBOOK.md)
 - [验收与容量签字](deploy/VERIFICATION.md)

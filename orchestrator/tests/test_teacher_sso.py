@@ -38,6 +38,20 @@ def make_ticket(*, uid=42, tid=TID, issued_at=1_800_000_000, expires_at=1_800_00
 
 
 class TeacherSsoTests(unittest.TestCase):
+    def test_malformed_transport_is_always_a_value_error(self):
+        for verify in (verify_hydro_ticket, verify_session):
+            for token in (
+                "abcdefghijklmnop.中文",
+                "中文.abcdefghijklmnop",
+                "abcdefghijklmnop." + "A" * 44,
+                "A" * 4097 + "." + "A" * 43,
+                "abcdefghijklmnop.." + "A" * 43,
+                "missing-separator",
+            ):
+                with self.subTest(verifier=verify.__name__, token=token[:24]):
+                    with self.assertRaises(ValueError):
+                        verify(token, KEY)
+
     def test_hydro_ticket_becomes_scoped_session(self):
         identity = verify_hydro_ticket(make_ticket(), KEY, now=1_800_000_010)
         self.assertEqual(identity.uid, 42)

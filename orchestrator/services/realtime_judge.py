@@ -230,6 +230,12 @@ class RealtimeJudge:
             row = self.store.get_web_submission(int(submission_row_id))
             if row is None:
                 raise KeyError(f"web submission does not exist: {submission_row_id}")
+            blocker = self.store.ambiguous_web_submission_blocker(int(row["id"]))
+            if blocker is not None:
+                raise RealtimeJudgeAmbiguousError(
+                    f"本题递交 #{blocker} 的 OJ 结果待核对；已禁止自动重发不确定递交，"
+                    "后续网页版本已保存，核对成功后按原顺序送评"
+                )
             state = str(row.get("judge_state") or "local")
             if state == "submitted" and row.get("rid"):
                 return row

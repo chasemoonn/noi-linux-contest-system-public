@@ -246,7 +246,7 @@ def verify_browser(config: dict, now: datetime) -> str:
     age = (now - observed).total_seconds()
     if payload["schema_version"] != 1 or payload["qualification_marker"] != config["qualification_marker"] or \
             payload["seat_set_sha256"] != config["seat_set_sha256"] or payload["formal_seat_count"] != 15 or \
-            payload["transport_profile"] not in {"direct_http", "compat_https"} or \
+            payload["transport_profile"] not in {"direct_http", "direct_https", "compat_https"} or \
             isinstance(payload["sequence"], bool) or not isinstance(payload["sequence"], int) or \
             payload["sequence"] < 1 or not started < observed or (observed - started).total_seconds() > 60 or \
             not isinstance(payload["rtt_samples_ms"], list) or len(payload["rtt_samples_ms"]) < 5 or \

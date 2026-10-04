@@ -148,7 +148,7 @@ sudo python3 scripts/collect_v1_components.py --role desktop \
   --output /root/noi-v1/evidence/components/desktop.json
 
 sudo python3 scripts/collect_v1_components.py --role oj \
-  --plugin-root <已安装且精确两文件的Hydro插件目录> \
+  --plugin-root <已安装入口脚本、package.json、教师模板及两份语言文件的Hydro插件目录> \
   --output /root/noi-v1/evidence/components/oj.json
 ```
 

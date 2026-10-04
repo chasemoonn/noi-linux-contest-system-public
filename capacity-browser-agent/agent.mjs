@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { chromium } from 'playwright';
+import { installEchoProbe, focusRemoteEcho, measureRemoteEcho } from './echo-probe.mjs';
 import {
   AgentError, NAMESPACE, atomicWrite, canonicalJson, envelope,
   requirePrivateRegular, requireTrustedExecutable, reserveNextSequence,
-  validateConfig, validateTelemetry
+  validateConfig, validateTelemetry, verifyDirectNavigation,
+  trackSeatSocket, assertSeatSockets, measureDirectTlsRtt
 } from './lib.mjs';
 
 function loadConfig(filePath) {
@@ -44,27 +46,13 @@ function signPayload(config, payload) {
   }
 }
 
-async function waitForNextFrame(page, canvasSelector, previous, timeoutMs) {
-  await page.waitForFunction(
-    ({ selector, prior }) => {
-      const canvas = document.querySelector(selector);
-      return canvas && canvas.__noiV1FrameState && canvas.__noiV1FrameState.sequence > prior;
-    },
-    { selector: canvasSelector, prior: previous },
-    { timeout: timeoutMs }
-  );
-  return page.$eval(canvasSelector, canvas => ({
-    sequence: canvas.__noiV1FrameState.sequence,
-    at: canvas.__noiV1FrameState.at
-  }));
-}
-
 async function collectSample(config, pages, context, websocketState) {
   const windowStarted = new Date();
   const websocketOpensBefore = websocketState.opens;
   const attempts = await Promise.all(Array.from({ length: config.rtt_attempts }, async () => {
     const started = performance.now();
     try {
+      if (config.transport_profile === 'direct_https') return await measureDirectTlsRtt(config);
       const response = await context.request.get(config.rtt_url, {
         timeout: config.navigation_timeout_ms,
         failOnStatusCode: false
@@ -79,43 +67,21 @@ async function collectSample(config, pages, context, websocketState) {
   const canvases = pages.map(page => page.locator(config.canvas_selector));
   await Promise.all(canvases.map(canvas =>
     canvas.waitFor({ state: 'visible', timeout: config.navigation_timeout_ms })));
-  await Promise.all(canvases.map(canvas => canvas.click({ position: { x: 20, y: 20 } })));
+  const regions = await Promise.all(pages.map(page => focusRemoteEcho(page, config.canvas_selector)));
   for (const key of config.sample_keys) {
     const values = await Promise.all(pages.map(async (page, index) => {
-      const canvas = canvases[index];
-      const baseline = await canvas.evaluate(item => ({
-        sequence: item.__noiV1FrameState?.sequence || 0,
-        started: performance.now()
-      }));
-      await page.keyboard.press(key);
-      let frame;
       try {
-        frame = await waitForNextFrame(
-          page, config.canvas_selector, baseline.sequence, config.frame_timeout_ms
-        );
-      } catch {
-        throw new AgentError(`seat ${index + 1} key-to-frame wait failed`);
+        return await measureRemoteEcho(page, key, regions[index], config.frame_timeout_ms);
+      } catch (error) {
+        throw new AgentError(`seat ${index + 1} remote key acknowledgment failed: ${error.message}`);
       }
-      const latency = frame.at - baseline.started;
-      if (!Number.isFinite(latency)) {
-        throw new AgentError(`seat ${index + 1} key-to-frame measurement is non-finite`);
-      }
-      if (latency <= 0) {
-        throw new AgentError(`seat ${index + 1} key-to-frame measurement is non-positive`);
-      }
-      if (latency > config.frame_timeout_ms + 100) {
-        throw new AgentError(`seat ${index + 1} key-to-frame measurement exceeded timeout`);
-      }
-      return latency;
     }));
     keySamples.push(...values);
   }
   if (rttSamples.length < 5 || keySamples.length < 5) {
     throw new AgentError('browser sample does not contain enough successful observations');
   }
-  if (websocketState.opens - websocketState.closes !== 15) {
-    throw new AgentError('15 qualification seat WebSockets are not uniquely connected');
-  }
+  assertSeatSockets(websocketState);
   const elapsed = Date.now() - windowStarted.getTime();
   if (elapsed < 1000) {
     await new Promise(resolve => setTimeout(resolve, 1000 - elapsed));
@@ -154,33 +120,15 @@ async function run(config, loop) {
       ignoreHTTPSErrors: false,
       serviceWorkers: 'block'
     });
-    await context.addInitScript(({ canvasSelector }) => {
-      const methods = ['drawImage', 'putImageData', 'fillRect', 'strokeRect', 'clearRect'];
-      for (const method of methods) {
-        const original = CanvasRenderingContext2D.prototype[method];
-        CanvasRenderingContext2D.prototype[method] = function(...args) {
-          const result = original.apply(this, args);
-          if (this.canvas && this.canvas.matches(canvasSelector)) {
-            const state = this.canvas.__noiV1FrameState || { sequence: 0, at: 0 };
-            state.sequence += 1;
-            state.at = performance.now();
-            this.canvas.__noiV1FrameState = state;
-          }
-          return result;
-        };
-      }
-    }, { canvasSelector: config.canvas_selector });
-    const websocketState = { opens: 0, closes: 0 };
-    const websocketPattern = new RegExp(config.websocket_url_pattern);
+    await context.addInitScript(installEchoProbe, { canvasSelector: config.canvas_selector });
+    const websocketState = { opens: 0, closes: 0, connected: Array(15).fill(0), invalid: false };
     const pages = [];
     for (const seatUrl of config.seat_urls) {
       const page = await context.newPage();
+      const seatIndex = pages.length;
       page.setDefaultTimeout(config.navigation_timeout_ms);
       page.on('websocket', socket => {
-        if (websocketPattern.test(socket.url())) {
-          websocketState.opens += 1;
-          socket.on('close', () => { websocketState.closes += 1; });
-        }
+        trackSeatSocket(config, websocketState, seatIndex, socket);
       });
       const response = await page.goto(seatUrl, {
         waitUntil: 'domcontentloaded', timeout: config.navigation_timeout_ms
@@ -188,6 +136,9 @@ async function run(config, loop) {
       if (!response || response.status() !== 200 ||
           new URL(page.url()).origin !== new URL(seatUrl).origin) {
         throw new AgentError('qualification seat navigation failed or changed origin');
+      }
+      if (config.transport_profile === 'direct_https') {
+        verifyDirectNavigation(config, seatUrl, page.url(), await response.serverAddr());
       }
       await page.locator(config.canvas_selector).waitFor({ state: 'visible' });
       pages.push(page);
@@ -199,6 +150,7 @@ async function run(config, loop) {
     if (websocketState.opens !== 15) {
       throw new AgentError('qualification seats did not establish exactly 15 initial WebSockets');
     }
+    assertSeatSockets(websocketState);
     do {
       const started = performance.now();
       await collectSample(config, pages, context, websocketState);

@@ -17,7 +17,12 @@ process.env.ORCHESTRATOR_MATERIAL_IDEMPOTENCY_FILE = path.join(tempDir, 'materia
 
 class UserFacingError extends Error {}
 class PermissionError extends UserFacingError {}
-class Handler {}
+class Handler {
+    constructor() {
+        this.domain = { _id: 'system' };
+        this.args = { tid: '0123456789abcdef01234567' };
+    }
+}
 class MockObjectId {
     constructor(value) { this.value = String(value); }
     toString() { return this.value; }
@@ -27,12 +32,17 @@ function CreateError(name, Base) {
     return class extends Base { constructor(...args) { super(...args); this.name = name; } };
 }
 
-const contest = { docId: new MockObjectId('0123456789abcdef01234567'), owner: 42 };
+const contest = { docId: new MockObjectId('0123456789abcdef01234567'), owner: 42, endAt: new Date(Date.now()+3600000) };
 const hydroMock = {
     BadRequestError: class extends UserFacingError {},
     ContestModel: {
-        async get() { return contest; },
+        async get(domainId, tid) {
+            assert.equal(domainId, 'system');
+            assert.equal(String(tid), '0123456789abcdef01234567');
+            return contest;
+        },
         getMulti(_domain, query) {
+            assert.equal(_domain, 'system');
             return {
                 limit() {
                     return { async toArray() { return [{ ...contest, query }]; } };
@@ -87,10 +97,20 @@ test('OJ navigation exposes a teacher-owned contest chooser', async () => {
     };
     handler.response = {};
     hydroMock.PERM.PERM_EDIT_CONTEST_SELF = 2n;
-    await handler.get('system');
+    await handler.get();
     assert.equal(handler.response.template, 'orchestrator_teacher_home.html');
     assert.equal(handler.response.body.contests.length, 1);
-    assert.deepEqual(handler.response.body.contests[0].query, { owner: 42 });
+    assert.deepEqual(handler.response.body.contests[0].query, { rule: 'oi', owner: 42 });
+});
+
+test('logged out teacher entry requests login instead of showing an empty contest list', async () => {
+    const HandlerClass = routes.get('/noi-linux');
+    const handler = new HandlerClass();
+    handler.user = { _id: 1 };
+    handler.response = {};
+    await handler.get();
+    assert.equal(handler.response.redirect, '/login?redirect=%2Fnoi-linux');
+    assert.equal(handler.response.template, undefined);
 });
 
 after(() => {
@@ -108,7 +128,7 @@ test('contest owner receives a short-lived scoped teacher ticket', async () => {
         hasPerm: () => false,
     };
     handler.response = {};
-    await handler.get('system', new MockObjectId('0123456789abcdef01234567'));
+    await handler.get();
     const target = new URL(handler.response.redirect);
     assert.equal(target.origin + target.pathname, 'https://exam.example.test/admin/sso');
     const ticket = target.searchParams.get('ticket');
@@ -134,7 +154,7 @@ test('ordinary contestant cannot enter the teacher console', async () => {
     };
     handler.response = {};
     await assert.rejects(
-        handler.get('system', new MockObjectId('0123456789abcdef01234567')),
+        handler.get(),
         PermissionError,
     );
 });

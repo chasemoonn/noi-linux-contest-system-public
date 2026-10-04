@@ -15,9 +15,24 @@ class StaticCheckTests(unittest.TestCase):
         code = 'freopen("apple.in","r",stdin); freopen("apple.out","w",stdout);'
         self.assertEqual(check_code(code, "apple"), [])
 
-    def test_commented_freopen_does_not_pass(self):
+    def test_comments_do_not_determine_a_score(self):
         code = '// freopen("apple.in","r",stdin);\n/* freopen("apple.out","w",stdout); */'
-        self.assertIn("未检测到完整的 freopen", check_code(code, "apple")[0])
+        self.assertEqual(check_code(code, "apple"), [])
+
+    def test_legal_file_io_styles_are_not_rejected(self):
+        for code in (
+            'std::ifstream in("apple.in"); std::ofstream out("apple.out");',
+            '#define TASK "apple"\nfreopen(TASK ".in","r",stdin); freopen(TASK ".out","w",stdout);',
+            'FILE* in=fopen("apple.in","r"); FILE* out=fopen("apple.out","w");',
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(check_code(code, "apple"), [])
+
+    def test_literal_mismatch_is_only_an_advisory(self):
+        warnings = check_code('freopen("other.in","r",stdin);', "apple")
+        self.assertTrue(warnings)
+        self.assertIn("以 OJ 评测为准", warnings[0])
+        self.assertNotIn("0 分", warnings[0])
 
     def test_comment_markers_inside_string_are_preserved(self):
         source = 'const char* s = "//not a comment"; // real\nint x;'

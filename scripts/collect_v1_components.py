@@ -22,7 +22,11 @@ CONTAINER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 PLUGIN_FILES = (
     "index.js",
     "package.json",
+    "templates/orchestrator_teacher_home.html",
+    "locale/zh.yaml",
+    "locale/en.yaml",
 )
+PLUGIN_DIRECTORIES = ("templates", "locale")
 
 
 class ComponentError(RuntimeError):
@@ -120,7 +124,8 @@ def image_label(docker_bin: Path, image_id: str, name: str, label: str) -> str:
 
 def read_plugin_file(root: Path, relative: str) -> bytes:
     path = root / Path(relative)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
@@ -170,13 +175,16 @@ def plugin_digest(root: Path) -> str:
             )
         ):
             raise ComponentError("Hydro plugin root has an unsafe ancestor")
-    observed = sorted(
-        str(path.relative_to(root)).replace("\\", "/")
-        for path in root.rglob("*")
-        if path.is_file() or path.is_symlink()
-    )
-    if observed != sorted(PLUGIN_FILES):
+    entries = list(root.rglob("*"))
+    observed = sorted(path.relative_to(root).as_posix() for path in entries)
+    if observed != sorted((*PLUGIN_FILES, *PLUGIN_DIRECTORIES)):
         raise ComponentError("Hydro plugin file set differs")
+    for relative in PLUGIN_DIRECTORIES:
+        info = (root / relative).lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or (platform.system().lower() == "linux"
+                    and (info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022))):
+            raise ComponentError("Hydro plugin asset directory is unsafe")
     digest = hashlib.sha256()
     for relative in sorted(PLUGIN_FILES):
         raw = read_plugin_file(root, relative)

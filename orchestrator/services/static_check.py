@@ -62,6 +62,12 @@ def strip_cpp_comments(code: str) -> str:
 
 
 def check_code(code: str, name: str) -> list[str]:
+    """Advisory hints only; the OJ judges the student's unchanged program.
+
+    A regex cannot prove file I/O behavior (fstream, macros, helper functions
+    and conditional compilation are all legitimate). Never infer a zero score
+    from a missing literal freopen call.
+    """
     source = strip_cpp_comments(code)
     issues = []
     for pattern, message in BANNED_PATTERNS:
@@ -73,13 +79,10 @@ def check_code(code: str, name: str) -> list[str]:
     )
     inputs = [filename for filename, mode in calls if mode.startswith("r")]
     outputs = [filename for filename, mode in calls if mode.startswith("w")]
-    if not inputs or not outputs:
-        issues.append("未检测到完整的 freopen 文件读写（复赛中该题 0 分）")
-    else:
-        if f"{name}.in" not in inputs:
-            issues.append(f"输入文件名错误：期望 {name}.in，实际 {inputs}")
-        if f"{name}.out" not in outputs:
-            issues.append(f"输出文件名错误：期望 {name}.out，实际 {outputs}")
+    if inputs and f"{name}.in" not in inputs:
+        issues.append(f"请核对输入文件名：约定 {name}.in，检测到 {inputs}（以 OJ 评测为准）")
+    if outputs and f"{name}.out" not in outputs:
+        issues.append(f"请核对输出文件名：约定 {name}.out，检测到 {outputs}（以 OJ 评测为准）")
     return issues
 
 
@@ -98,7 +101,7 @@ def check_submission(submit_dir: str, files: list[str]) -> dict:
             code = present[expected].read_text(encoding="utf-8-sig", errors="replace")
             issues = check_code(code, name)
             report[name] = {
-                "status": "ok" if not issues else "rule_violation",
+                "status": "ok",
                 "file": expected,
                 "issues": issues,
             }
@@ -130,7 +133,7 @@ def check_answer_tree(answer_root: str, candidate: str, files: list[str]) -> dic
             code = expected.read_text(encoding="utf-8-sig", errors="replace")
             issues = check_code(code, name)
             report[name] = {
-                "status": "ok" if not issues else "rule_violation",
+                "status": "ok",
                 "file": f"{candidate}/{name}/{name}.cpp",
                 "issues": issues,
             }
@@ -174,8 +177,3 @@ def check_answer_tree(answer_root: str, candidate: str, files: list[str]) -> dic
                 ],
             }
     return report
-
-
-def force_zero_code(code: str, issues: list[str]) -> str:
-    reason = "；".join(issues).replace("\n", " ")
-    return f'#error "NOI environment rule violation"\n// {reason}\n{code}'

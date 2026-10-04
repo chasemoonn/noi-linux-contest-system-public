@@ -1,3 +1,4 @@
+import ast
 import os
 from pathlib import Path
 import shutil
@@ -14,6 +15,47 @@ def script(name: str) -> str:
 
 
 class ReleaseScriptSafetyTests(unittest.TestCase):
+    def test_image_verifier_exercises_real_student_compile_run_and_capture(self):
+        source = script("verify-contest-image-local.sh")
+        self.assertNotIn("BJ0001", source)
+        for marker in (
+            "CANDIDATE_ID=CSP001",
+            "STUDENT_WORKFLOW_PY",
+            'interpolation=None',
+            '"FT_00_CM"',
+            '"FT_01_CM"',
+            '"EX_00_CM"',
+            "subprocess.run(",
+            "capture-formal-source.py",
+            'snapshot["sha256"]',
+            "student_compile_run_capture_verified",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
+        embedded = source.split("<<'STUDENT_WORKFLOW_PY'\n", 1)[1].split(
+            "\nSTUDENT_WORKFLOW_PY", 1
+        )[0]
+        ast.parse(embedded, feature_version=(3, 8))
+
+    def test_image_verifier_rejects_invalid_resource_limits_before_docker(self):
+        bash = self._bash()
+        if not bash:
+            self.skipTest("bash is required")
+        for key, value in (
+            ("NOI_VERIFY_MEMORY_MIB", "512"),
+            ("NOI_VERIFY_CPUS", "0"),
+        ):
+            with self.subTest(key=key):
+                env = dict(os.environ, NOI_VERIFY_MEMORY_MIB="2560", NOI_VERIFY_CPUS="1.5")
+                env[key] = value
+                result = subprocess.run(
+                    [bash, self._shell_path(ROOT / "deploy/verify-contest-image-local.sh")],
+                    env=env, capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(key, result.stderr)
+                self.assertNotIn("docker", result.stderr.lower())
+
     def test_iso_digest_label_is_canonical_lowercase_across_release_scripts(self):
         expected = "c8824240736352e5e4aaf3f6532b40961f75fa9f23d670bb78881355a49d5878"
         for name in (

@@ -1,0 +1,19 @@
+<script nonce="{{ script_nonce }}">
+(()=>{
+let state={{ clock|tojson }}, anchor=performance.now();
+const clockEl=document.getElementById('exam-clock'), deadlineEl=document.getElementById('exam-deadline'), hint=document.getElementById('sync-status');
+const receiptPage=document.querySelector('[data-receipt-revision]');
+const format=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+function render(){const now=state.server_ms+performance.now()-anchor;
+if(clockEl)clockEl.textContent='北京时间 '+format.format(new Date(now));
+if(deadlineEl){const remaining=Math.max(0,Math.ceil((state.end_ms-now)/1000));deadlineEl.textContent=now<state.begin_ms?'尚未开赛':!state.opened||!remaining?'已截止，停止答题':'距截止 '+Math.floor(remaining/3600)+':'+String(Math.floor(remaining/60)%60).padStart(2,'0')+':'+String(remaining%60).padStart(2,'0');}
+const closed=!state.opened||now>=state.end_ms;
+document.querySelectorAll('[data-submit-action]').forEach(el=>{if(el.tagName==='BUTTON')el.disabled=closed;else{el.classList.toggle('btn-disabled',closed);el.setAttribute('aria-disabled',String(closed));}});
+}
+async function sync(){try{const response=await fetch({{ status_url|tojson }},{credentials:'same-origin',cache:'no-store'});if(!response.ok)throw new Error();state=await response.json();anchor=performance.now();if(hint)hint.textContent='时间与 OJ 同步；成绩以 OJ 为准。';render();
+// Only the receipt list opts in. Never reload a code-upload form or hidden tab.
+if(receiptPage && typeof state.receipt_revision==='string' && state.receipt_revision!==receiptPage.getAttribute('data-receipt-revision') && !document.hidden && !document.querySelector('input[type="file"]'))window.location.reload();
+}catch(error){if(hint)hint.textContent='暂时无法校时；递交仍以服务端截止时间为准。登录失效时请返回题目列表重登。';}}
+render();setInterval(render,1000);setInterval(sync,15000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)sync()});window.addEventListener('pageshow',sync);
+})();
+</script>

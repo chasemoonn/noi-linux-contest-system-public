@@ -131,7 +131,7 @@ class AliyunECS:
             )
         if len(groups) != 1:
             raise RuntimeError(
-                "比赛 ECS 还绑定其他安全组，无法证明 TCP/80 已失败关闭"
+                "比赛 ECS 还绑定其他安全组，无法证明桌面端口已失败关闭"
             )
         return configured
 
@@ -249,12 +249,12 @@ class AliyunECS:
         instances = self._instances_in_security_group(security_group_id)
         if len(instances) != 1:
             raise RuntimeError(
-                "比赛安全组不是目标 ECS 专属，拒绝开放 TCP/80"
+                "比赛安全组不是目标 ECS 专属，拒绝开放桌面端口"
             )
         instance = instances[0]
         if self._string_attr(instance, "instance_id") != self.instance_id:
             raise RuntimeError(
-                "比赛安全组绑定了非目标 ECS，拒绝开放 TCP/80"
+                "比赛安全组绑定了非目标 ECS，拒绝开放桌面端口"
             )
         self._security_group_id(instance)
         if self._secondary_enis_in_security_group(security_group_id):
@@ -348,7 +348,7 @@ class AliyunECS:
             management_match = None
             if not is_managed:
                 for management_source in management_sources:
-                    for management_port in (22, port):
+                    for management_port in sorted({22, 80, port}):
                         candidate = (management_source, management_port)
                         if self._exact_ipv4_tcp_accept(
                             rule, management_source, management_port
@@ -384,7 +384,7 @@ class AliyunECS:
         management_expected = {
             (management_source, management_port)
             for management_source in management_sources
-            for management_port in (22, port)
+            for management_port in {22, 80, port}
         }
         management_missing = management_expected - management_seen
         management_healthy = not management_missing
@@ -546,7 +546,9 @@ class AliyunECS:
         if snapshot["conflict_count"]:
             raise RuntimeError("安全组存在非编排服务管理的公网桌面入站规则")
         if not snapshot["management_healthy"]:
-            raise RuntimeError("安全组缺少 OJ /32 的 TCP 22/80 管理与回退规则")
+            ports = "/".join(str(p) for p in sorted({22, 80, int(self.desktop_access.get('port',80))}))
+            purpose = "管理与验收" if int(self.desktop_access.get('port',80)) == 443 else "管理与回退"
+            raise RuntimeError(f"安全组缺少 OJ /32 的 TCP {ports} {purpose}规则")
         if snapshot["open"]:
             if int(end_at_ms) <= int(time.time() * 1000):
                 self.revoke_desktop_access()

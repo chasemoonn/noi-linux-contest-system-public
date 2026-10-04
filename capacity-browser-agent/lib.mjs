@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import https from 'node:https';
+import { isIP } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -7,6 +9,8 @@ export const NAMESPACE = 'noi-v1-capacity-telemetry';
 const SAFE_SIGNER = /^[A-Za-z0-9_.@+-]{1,80}$/;
 const HEX64 = /^[a-f0-9]{64}$/;
 const SAFE_KEY = /^(?:Arrow(?:Left|Right|Up|Down)|[a-z0-9])$/;
+const DNS_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const SEAT_PATH = /^\/s\/([A-Za-z0-9_-]{12,64})\/vnc[.]html$/;
 
 export class AgentError extends Error {}
 
@@ -43,6 +47,11 @@ function strictOrigin(value, label, transportProfile) {
         (parsed.port && parsed.port !== '80')) {
       throw new AgentError(`${label} must be one HTTP IPv4 URL on the direct profile`);
     }
+  } else if (transportProfile === 'direct_https') {
+    if (parsed.protocol !== 'https:' || parsed.port || isIP(parsed.hostname) ||
+        parsed.hostname.length > 253 || !DNS_HOST.test(parsed.hostname)) {
+      throw new AgentError(`${label} must be one HTTPS DNS origin on port 443`);
+    }
   } else if (transportProfile === 'compat_https') {
     if (parsed.protocol !== 'https:') {
       throw new AgentError(`${label} must be HTTPS on the compatibility profile`);
@@ -54,13 +63,15 @@ function strictOrigin(value, label, transportProfile) {
 }
 
 export function validateConfig(value) {
-  const row = exactObject(value, new Set([
+  const keys = new Set([
     'schema_version', 'transport_profile', 'qualification_marker', 'seat_set_sha256', 'seat_urls', 'rtt_url',
     'websocket_url_pattern', 'canvas_selector', 'sample_keys', 'rtt_attempts',
     'sample_interval_seconds', 'navigation_timeout_ms', 'frame_timeout_ms',
     'headless', 'signer', 'signing_key_path', 'ssh_keygen_path', 'state_path',
     'output_path'
-  ]), 'agent configuration');
+  ]);
+  if (value?.transport_profile === 'direct_https') keys.add('direct_endpoint_ipv4');
+  const row = exactObject(value, keys, 'agent configuration');
   if (row.schema_version !== 1) throw new AgentError('agent configuration schema differs');
   if (typeof row.qualification_marker !== 'string' ||
       !/^NOI-V1-QUAL-[A-Z0-9]{16,64}$/.test(row.qualification_marker)) {
@@ -86,6 +97,28 @@ export function validateConfig(value) {
   }
   try { new RegExp(row.websocket_url_pattern); } catch {
     throw new AgentError('WebSocket URL pattern is invalid');
+  }
+  if (row.transport_profile === 'direct_https') {
+    if (typeof row.direct_endpoint_ipv4 !== 'string' || isIP(row.direct_endpoint_ipv4) !== 4) {
+      throw new AgentError('native TLS profile requires the frozen contest endpoint IPv4');
+    }
+    if (new Set(seats.map(seat => seat.pathname)).size !== 15) {
+      throw new AgentError('native TLS must bind 15 distinct seat paths');
+    }
+    for (const seat of seats) {
+      const match = SEAT_PATH.exec(seat.pathname);
+      if (!match || seat.searchParams.getAll('path').length !== 1 ||
+          seat.searchParams.get('path').replace(/^\//, '') !== `s/${match[1]}/websockify` ||
+          ['true', '1'].includes(seat.searchParams.get('view_only'))) {
+        throw new AgentError('native TLS seat must bind its matching writable noVNC path');
+      }
+      if (!new RegExp(row.websocket_url_pattern).test(seatWebSocketUrl(seat.href))) {
+        throw new AgentError('WebSocket pattern does not match the frozen WSS seat');
+      }
+    }
+    if (!seats.some(seat => seat.pathname === rtt.pathname)) {
+      throw new AgentError('native TLS RTT must use one frozen public seat page');
+    }
   }
   if (seatSetSha256(row) !== row.seat_set_sha256) {
     throw new AgentError('seat set SHA256 differs from the frozen browser targets');
@@ -140,7 +173,89 @@ export function seatSetSha256(config) {
     rtt_url: config.rtt_url,
     websocket_url_pattern: config.websocket_url_pattern
   };
+  // Preserve historical hashes; native TLS additionally binds the direct VM,
+  // so a proxy URL cannot be relabelled as a new direct-capacity result.
+  if (config.transport_profile === 'direct_https') {
+    frozen.direct_endpoint_ipv4 = config.direct_endpoint_ipv4;
+  }
   return crypto.createHash('sha256').update(canonicalJson(frozen)).digest('hex');
+}
+
+export function seatWebSocketUrl(seatUrl) {
+  const seat = new URL(seatUrl);
+  return `wss://${seat.host}${seat.pathname.replace(/vnc[.]html$/, 'websockify')}`;
+}
+
+export function verifyDirectNavigation(config, expectedUrl, observedUrl, serverAddress) {
+  if (config.transport_profile !== 'direct_https') return;
+  const address = serverAddress?.ipAddress?.replace(/^::ffff:/, '');
+  if (new URL(observedUrl).href !== new URL(expectedUrl).href ||
+      address !== config.direct_endpoint_ipv4 || serverAddress?.port !== 443) {
+    throw new AgentError('native TLS navigation did not reach the frozen seat and contest endpoint');
+  }
+}
+
+export function trackSeatSocket(config, state, index, socket) {
+  const matches = config.transport_profile === 'direct_https'
+    ? socket.url() === seatWebSocketUrl(config.seat_urls[index])
+    : new RegExp(config.websocket_url_pattern).test(socket.url());
+  if (!matches) {
+    if (config.transport_profile === 'direct_https') state.invalid = true;
+    return;
+  }
+  state.opens += 1;
+  state.connected[index] += 1;
+  let closed = false;
+  socket.on('close', () => {
+    if (closed) return;
+    closed = true;
+    state.closes += 1;
+    state.connected[index] -= 1;
+  });
+}
+
+export function assertSeatSockets(state) {
+  if (state.invalid || state.connected.length !== 15 ||
+      state.connected.some(count => count !== 1)) {
+    throw new AgentError('15 qualification seat WebSockets are not uniquely connected');
+  }
+}
+
+export function measureDirectTlsRtt(config, request = https.request) {
+  // Keep hostname/SNI/CA validation, connect to the frozen VM with a fresh
+  // connection, and check the actual peer. Native requests do not follow redirects.
+  const target = new URL(config.rtt_url);
+  const started = performance.now();
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    let timer;
+    const finish = error => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      if (error) reject(new AgentError('native TLS RTT failed endpoint, certificate or HTTP checks'));
+      else resolve(performance.now() - started);
+    };
+    const pending = request({
+      protocol: 'https:', hostname: target.hostname, port: 443,
+      servername: target.hostname, path: target.pathname,
+      method: 'GET', agent: false, rejectUnauthorized: true,
+      lookup: (_host, options, callback) => options.all
+        ? callback(null, [{ address: config.direct_endpoint_ipv4, family: 4 }])
+        : callback(null, config.direct_endpoint_ipv4, 4),
+    }, response => {
+      const address = response.socket.remoteAddress?.replace(/^::ffff:/, '');
+      if (response.statusCode !== 200 || address !== config.direct_endpoint_ipv4) {
+        finish(true); response.destroy(); return;
+      }
+      response.on('error', finish);
+      response.on('end', () => finish(false));
+      response.resume();
+    });
+    pending.on('error', finish);
+    timer = setTimeout(() => { finish(true); pending.destroy(); }, config.navigation_timeout_ms);
+    pending.end();
+  });
 }
 
 export function requirePrivateRegular(filePath, { executable = false, allowMissing = false } = {}) {
@@ -277,7 +392,7 @@ export function validateTelemetry(payload) {
   if (typeof row.seat_set_sha256 !== 'string' || !HEX64.test(row.seat_set_sha256)) {
     throw new AgentError('telemetry seat set SHA256 is invalid');
   }
-  if (!['direct_http', 'compat_https'].includes(row.transport_profile)) {
+  if (!['direct_http', 'direct_https', 'compat_https'].includes(row.transport_profile)) {
     throw new AgentError('telemetry transport profile is invalid');
   }
   if (row.formal_seat_count !== 15) {

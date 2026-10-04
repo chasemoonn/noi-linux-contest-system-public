@@ -484,8 +484,26 @@ function submissionContestDocId(value) {
     return ObjectId.isValid(text) ? new ObjectId(text) : value;
 }
 
-async function completeSubmissionEntry(entry, contestDocId, problemDocId, uid) {
+async function existingSubmissionJournal(entry, contestDocId, problemDocId, uid) {
+    const status = await ContestModel.getStatus(DOMAIN, contestDocId, uid);
+    const matches = Array.isArray(status?.journal) ? status.journal.filter((item) => (
+        String(item.rid) === String(entry.rid) && Number(item.pid) === Number(problemDocId)
+    )) : [];
+    return matches.length === 1 ? matches[0] : null;
+}
+
+async function completeSubmissionEntry(entry, contestDocId, problemDocId, uid, { recovering = false } = {}) {
     const rid = ObjectId.isValid(entry.rid) ? new ObjectId(entry.rid) : entry.rid;
+    if (!entry.statusUpdated && recovering) {
+        // Replaying updateStatus without a judge payload resets Hydro's
+        // journal to WAITING/0. A recovery must preserve the existing result;
+        // absent/ambiguous journal evidence is not permission to create it.
+        if (!await existingSubmissionJournal(entry, contestDocId, problemDocId, uid)) {
+            throw new OrchestratorSubmissionAmbiguousError();
+        }
+        entry.statusUpdated = true;
+        saveIdempotencyState();
+    }
     if (!entry.statusUpdated) {
         await ContestModel.updateStatus(DOMAIN, contestDocId, uid, rid, problemDocId);
         entry.statusUpdated = true;
@@ -551,6 +569,8 @@ async function resolveAmbiguousSubmission(submissionId, entry) {
         domainId: 1,
         files: 1,
         judgeAt: 1,
+        status: 1,
+        score: 1,
         lang: 1,
         pid: 1,
         uid: 1,
@@ -565,6 +585,18 @@ async function resolveAmbiguousSubmission(submissionId, entry) {
 
     const candidateRid = String(candidates[0]._id);
     if (entry.rid && String(entry.rid) !== candidateRid) return { status: 'multiple' };
+    const journal = await existingSubmissionJournal(
+        { ...entry, rid: candidateRid }, submissionContestDocId(entry.contestDocId),
+        entry.problemDocId, entry.uid,
+    );
+    // A record update and its contest journal update need not become visible
+    // together. Wait for Hydro's own matching result, never write WAITING/0
+    // over an already judged record while recovering a lost receipt.
+    if (!journal || !Number.isInteger(candidates[0].status)
+        || !Number.isFinite(candidates[0].score)
+        || journal.status !== candidates[0].status || journal.score !== candidates[0].score) {
+        return { status: 'pending' };
+    }
     // Even completed journal entries are correlated against the live record
     // collection on every status query. This makes the read-only endpoint a
     // uniqueness proof for qualification and recovery, rather than merely a
@@ -573,6 +605,7 @@ async function resolveAmbiguousSubmission(submissionId, entry) {
 
     entry.rid = candidateRid;
     entry.phase = 'record_created';
+    entry.statusUpdated = true;
     saveIdempotencyState();
     const rid = await completeSubmissionEntry(
         entry,
@@ -2263,6 +2296,7 @@ class OrchestratorSubmitHandler extends Handler {
                     submissionContestDocId(contestDocId),
                     problemDocId,
                     uid,
+                    { recovering: true },
                 );
             })();
             inFlight.set(submissionId, { fingerprint, promise: recovery });
@@ -2384,10 +2418,15 @@ class OrchestratorSubmitHandler extends Handler {
 }
 
 class OrchestratorTeacherConsoleHandler extends Handler {
-    async get(domainId, tid) {
+    async get() {
         if (!TEACHER_ADMIN_URL) {
             throw new UserFacingError('NOI Linux teacher console is not configured.');
         }
+        // Plain JavaScript handlers have no Hydro @param decorators. Read
+        // resolved domain and route arguments from the handler context.
+        const domainId = this.domain._id;
+        const tid = this.args.tid;
+        if (!ObjectId.isValid(tid)) throw new BadRequestError('Invalid contest id.');
         const contestId = tid instanceof ObjectId ? tid : new ObjectId(String(tid));
         const tdoc = await ContestModel.get(domainId, contestId);
         if (!tdoc) throw new BadRequestError('Contest not found.');
@@ -2405,12 +2444,21 @@ class OrchestratorTeacherConsoleHandler extends Handler {
 }
 
 class OrchestratorTeacherHomeHandler extends Handler {
-    async get(domainId) {
+    async get() {
+        const uid = Number(this.user._id);
+        if (!Number.isSafeInteger(uid) || uid <= 1) {
+            this.response.redirect = '/login?redirect=%2Fnoi-linux';
+            return;
+        }
         const canEditAll = this.user.hasPerm(PERM.PERM_EDIT_CONTEST);
-        const query = canEditAll ? {} : { owner: Number(this.user._id) };
-        const contests = await ContestModel.getMulti(domainId, query).limit(100).toArray();
+        const domainId = this.domain._id;
+        const query = { rule: 'oi', ...(canEditAll ? {} : { owner: uid }) };
+        const recent = await ContestModel.getMulti(domainId, query).limit(100).toArray();
+        const now = Date.now();
+        const contests = recent.filter((item) => new Date(item.endAt).getTime() > now);
+        const ended_contests = recent.filter((item) => new Date(item.endAt).getTime() <= now).slice(0, 20);
         this.response.template = 'orchestrator_teacher_home.html';
-        this.response.body = { contests };
+        this.response.body = { contests, ended_contests, page_title: 'NOI Linux 考试管理' };
     }
 }
 

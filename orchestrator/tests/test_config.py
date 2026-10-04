@@ -39,6 +39,38 @@ orchestrator:
 
 
 class ConfigTests(unittest.TestCase):
+    def _load_with_pids_limit(self, value=None, *, omitted=False):
+        data = yaml.safe_load(CONFIG)
+        if not omitted:
+            data['contest_server']['pids_limit'] = value
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.yaml'
+            path.write_text(yaml.safe_dump(data), encoding='utf-8')
+            with patch.dict(os.environ, {'TEST_ACCESS_KEY': 'key-id'}):
+                return load_config(path)
+
+    def test_desktop_pids_default_has_gnome_firefox_headroom(self):
+        cfg = self._load_with_pids_limit(omitted=True)
+        self.assertEqual(cfg['contest_server']['pids_limit'], 1024)
+
+    def test_desktop_pids_normalizes_explicit_integer_string(self):
+        cfg = self._load_with_pids_limit('2048')
+        self.assertEqual(cfg['contest_server']['pids_limit'], 2048)
+
+    def test_desktop_pids_rejects_previous_crashing_limit(self):
+        with self.assertRaisesRegex(ValueError, r'pids_limit.*1024'):
+            self._load_with_pids_limit(512)
+
+    def test_desktop_pids_rejects_unlimited_or_unreasonable_values(self):
+        for value in (0, -1, 1023, 65537):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'pids_limit'):
+                self._load_with_pids_limit(value)
+
+    def test_desktop_pids_rejects_non_integer_configuration(self):
+        for value in (None, True, False, 1024.5, '1024.0', 'unlimited', [1024]):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'pids_limit'):
+                self._load_with_pids_limit(value)
+
     def test_qualification_failure_marker_is_off_by_default_and_strict_when_enabled(self):
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "config.yaml"

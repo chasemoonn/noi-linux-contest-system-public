@@ -220,10 +220,18 @@ sudo sha256sum /root/noi-v1-probes/fault_events
 私钥不进入控制器或仓库；探针只读签名信封，不能自行制造断网记录。开窗前至少做缺少 repair receipt、
 多一个网络成员、断网只有2次连续失败、错签名四个负向测试，全部必须 NO-GO。
 
+**网络隔离前置条件：** `nsenter --target PID --net` 不代表与宿主隔离。控制器若采用 `network_mode: host`，
+该操作会进入普通 OJ 宿主的网络命名空间。执行端现在拒绝 host、container 共享或缺失网络模式，
+并核对真实 namespace 的设备号/inode 与宿主不同；固定 namespace 文件描述符后才执行命令，
+避免 PID 复用时进入错误空间。读取失败也拒绝。不得删除此检查以让资格测试通过。
+趣信奥当前正式控制器实查为 host 模式，不能运行本节的网络故障注入；既有签名故障门槛因此仍未完成。
+不要为了压测在线切换控制器网络。可先进行隔离桌面的资源/浏览器负载预检，明确不生成最终资格通过记录；
+完整故障项须在经批准的独立资格环境执行，或另行设计不影响宿主网络的精确故障方法并验证后使用。
+
 执行端按 `release/v1-capacity-network-fault-agent-config.schema.json` 冻结控制器完整 Docker 身份、比赛
 主机唯一 IPv4/TCP 探测目标、`nsenter`/`iptables`/Python/`ssh-keygen` 绝对路径、signer、公私钥和
 root-only 恢复/回执/信封路径，再由 `scripts/build_v1_capacity_network_fault_agent.py` 构建权限0500的
-单文件工具。工具先做真实签名＋验签自检，然后进入固定控制器 PID 的网络 namespace，只安装一条
+单文件工具。工具先做真实签名＋验签自检，然后进入已核验并固定的控制器专用网络 namespace，只安装一条
 带资格 marker 的精确 OUTPUT TCP REJECT；普通 OJ 主机 namespace 不变。它在任何规则写入前后重复
 核对控制器 container/image/PID/StartedAt/RestartCount，持有 nonblocking root-only 锁；HUP/INT/TERM
 都会进入清理，遗留的持久化 recovery state 会使下次运行只撤销规则并拒绝继续，避免断网证据重复。
@@ -251,10 +259,10 @@ sudo /root/noi-v1-probes/run-controller-network-fault
   payload、签名、namespace 和 signer，避免 JSON 与签名跨文件复制时短暂错配；
 - `qualification_marker` 是本次演练随机身份，绑定浏览器和普通 OJ 两条签名链；
 - `telemetry_seat_set_sha256` 与浏览器配置中的 `seat_set_sha256` 必须相同。摘要由排序后的 15 个
-  完整座位 URL、RTT URL、WebSocket 规则和 `direct_http` 模式组成；签名 payload 每轮携带摘要，
+  完整座位 URL、RTT URL、WebSocket 规则和传输档位组成；`direct_https` 还绑定比赛机 IPv4。签名 payload 每轮携带摘要，
   但不携带任何座位 token。这样无需给生产网关增加资格专用响应头，也不会把普通学生座位误认成
   本次固定的 15 个资格座位；
-- `telemetry_transport_profile` 正式容量测试必须是 `direct_http`，并绑定本次杭州 EIP 的 IPv4/80；
+- `telemetry_transport_profile` 正式容量测试可以是旧入口的 `direct_http`（IPv4/80），或加密原生入口的 `direct_https`（专用域名/443）；必须与本次拟交付入口一致，不能混用结果；
   `compat_https` 只能作为备用链路的对照报告，不能替代真实学生高速入口的 15+2 容量结论；
 - `telemetry_public_key` 只放独立浏览器代理的 Ed25519 公钥；私钥绝不能进入服务器、仓库或
   探针配置；
@@ -267,13 +275,41 @@ sudo /root/noi-v1-probes/run-controller-network-fault
 15 个互不相同的正式资格座位并保持 15 条 noVNC WebSocket，每一轮对 15 个画布并发发键采帧；
 2 个备用位保持预热、运行和资源采样，但不冒充学生负载。代理不能与比赛
 服务器、控制器或采集器共用主机、私钥或 root 账户。代理固定 Node 22--24、锁文件中的 Playwright
-版本和系统 `ssh-keygen`。`direct_http` 只接受 IPv4/80，`compat_https` 只接受 HTTPS；每个 RTT 请求
-也必须返回 HTTP 200。15 个 URL、RTT URL 和 WebSocket 规则已由 `seat_set_sha256` 签名绑定；
-HTTP 档位反映当前真实学生路径的已知明文风险，不应被误写为安全
-链路；长期方案仍是把专用域名和 TLS 终止下沉到杭州 ECS。
-代理监听全部 15 条 noVNC WebSocket，并通过 Playwright 的键盘接口向每个 `#noVNC_container canvas` 发送
-固定按键；画布下一帧
-时间来自浏览器同一 `performance.now()` 时钟，不能用脚本主机时钟替代。
+版本和系统 `ssh-keygen`。`direct_http` 只接受 IPv4/80，`direct_https` 只接受专用 DNS 域名/443，
+`compat_https` 只作为代理对照；每个 RTT 请求也必须返回 HTTP 200。15 个 URL、RTT URL、WebSocket
+规则和档位已由 `seat_set_sha256` 签名绑定。HTTP 档位仍有明文风险，不能代替加密交付的验收。
+
+原生 TLS 的浏览器配置须额外提供 `direct_endpoint_ipv4`，填本次实际比赛机 EIP；它也被纳入座位集合摘要，
+不能给旧档位增加这一字段而沿用旧摘要。15 个入口必须对应不同的 `/s/<token>/vnc.html`，每个 URL 的
+`path` 参数必须对应自己的 `s/<token>/websockify`。RTT 使用其中一个公开座位页面的无查询串 URL，
+不要使用仅供主机回环检查的 `/healthz`。只改变 `quality` 等查询参数不算新增座位。
+
+浏览器检查页面实际对端 IP/443 与冻结 EIP 一致，且跳转后仍是同一个座位 URL；逐座核对唯一对应的 WSS
+连接，不仅比较连接总数。TLS RTT 连接到冻结 EIP，同时保留域名、SNI、信任链检查，拒绝跳转，测得的请求
+时间包含 TLS 建连开销。不得启用忽略证书错误。实现参考：[Playwright 对端地址](https://playwright.dev/docs/api/class-response#response-server-addr)、
+[Node HTTPS 请求选项](https://nodejs.org/download/release/v22.12.0/docs/api/https.html#httpsrequestoptions-callback)。
+代理监听全部15条noVNC WebSocket，并通过Playwright键盘接口发出配置中的按键。
+每个**隔离合成桌面**须先在远端Firefox打开 `capacity-browser-agent/remote-echo.html`，保持前台且完整色条可见。
+文件应作为测试材料复制到测试座位，不安装到正式学生桌面；不能在运行测量代理的本地网页打开它冒充远端。
+代理在`#noVNC_container canvas`中定位色条、点击其远端位置并移开鼠标，防止指针遮挡采样。
+
+色条编码本次远端页面标识、单调按键计数、实际按键码及校验码；只确认同一页面、计数恰好加一、
+按键一致的有效响应。光标闪烁、无关重绘、旧帧、按键不匹配、页面重置均不能作为成功响应。
+开始时间来自真实DOM keydown，结束时间来自解码后的远端像素，两者使用同一浏览器`performance.now()`；
+5ms读像素轮询的开销也计入读数。观察器不向画布写入像素，不用任意下一次draw调用代替因果响应。
+没有可见回显材料时明确失败，不自动降级旧测法。该项仅测受控按键响应；编辑器、编译、网页递交和
+整场比赛的真实工作负载仍须分别执行，不能用这个前台页面冒充全场学生操作。
+
+旧版任意帧读数不得沿用为新版延迟验收。既有签名信封格式未改变，旧签名本身不会证明使用了新方法；
+验收负责人必须绑定本轮实际代理源码版本及远端夹具，重新采集，不能混入旧日志。
+另外，历史字段`packet_loss_percent`目前计算的是HTTP/TLS探测请求失败比例，不是真正网络层丢包测量，
+不得在对外报告中把它称为实测网络丢包率。
+
+测量主机也必须留档：OS、实际浏览器/Playwright版本、启动参数和绘图配置。CLI诊断浏览器不自动等同
+本代理固定依赖版本；不同客户端的短测结果不能拼接为一个资格窗口。2026-09-16实测发现Windows
+headless客户端部分读像素调用耗时数百毫秒；改变2D加速选项会明显改变结果。须保存默认配置和对照，
+不能静默添加禁用加速参数、扣掉观察器耗时或把“首个WebSocket消息”替代真实按键回应来达到门槛。
+独立客户端校验应先于扩至15路；不在普通OJ宿主制造浏览器压力。
 
 代理将规范 JSON（键排序、紧凑分隔符、末尾换行）以 namespace
 `noi-v1-capacity-telemetry` 生成 OpenSSH 签名。`sequence` 必须单调递增。控制主机上的探针拒绝
@@ -297,7 +333,7 @@ sudo -u noi-v1-browser node agent.mjs \
 
 跨机器发布不能用共享目录、密码 SSH 或 `scp` 覆盖控制机文件。控制机给一个专用 SSH key 配置
 `authorized_keys` 的 `restrict,command="..."` 强制命令；该命令只运行
-`scripts/install_v1_capacity_telemetry.py`，从 stdin 读取信封、复验 Ed25519 签名和 `direct_http`，
+`scripts/install_v1_capacity_telemetry.py`，从 stdin 读取信封、复验 Ed25519 签名和明确冻结的传输档位，
 要求 sequence 严格增加，再以 root:root 0600 原子安装。杭州代理只调用 `publish.mjs`，SSH 必须
 显式传入专用 identity 和 pinned `known_hosts`，并使用 BatchMode、禁密码、禁交互认证、禁转发；
 成功输出只能是 `TELEMETRY_INSTALLED sequence=N`。
@@ -309,7 +345,10 @@ restrict,command="sudo -n /usr/local/sbin/install-v1-capacity-telemetry" ssh-ed2
 
 其中 root-owned `/usr/local/sbin/install-v1-capacity-telemetry` 固定 installer SHA、输出路径、signer、
 公钥和 `/usr/bin/ssh-keygen`，不接受 SSH 客户端传入参数。正式采样前必须分别做旧 sequence 重放、
-错签名和非 direct profile 三次负向测试，三者都应 NO-GO。
+错签名和不匹配的传输档位三次负向测试，三者都应 NO-GO。接收器的默认档位仍为 `direct_http`；
+验证原生加密入口时，root-owned 强制命令必须显式固定 `--transport-profile direct_https`，并将测量探针的
+`telemetry_transport_profile` 同样设为 `direct_https`。不能把此选项交由 SSH 客户端自由指定，也不能将
+`compat_https` 信封送入正式容量接收器。新旧档位必须重新冻结会话及摘要，不能改写已有证据。
 
 普通 OJ 观察器按 `release/v1-capacity-ordinary-oj-agent-config.schema.json` 冻结 HTTPS origin、公共
 路径、四个 PM2 基线、两条一次性金丝雀和签名身份，再用
