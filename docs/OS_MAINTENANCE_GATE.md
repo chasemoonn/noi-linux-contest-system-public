@@ -58,7 +58,11 @@ Windows 上36项新增测试中27项通过，6项真实 Linux 内核锁测试及
 既有流程64项、配置24项回归通过。Linux 专项覆盖独立进程锁冲突、正在进行事务的无损拒绝、
 部分获锁回滚、锁 inode 被替换、链接/缺文件拒绝、进程终止后的释放，以及真实本地socket断连、
 SIGTERM/到期退出和SIGKILL后的独立收尾入口；主机维护命令和网关使用隔离替身，这些不是实际无人值守升级或
-真实 systemd watchdog/重启验收。GitHub CI 的实际结果以对应提交运行记录为准，不预填通过。
+真实 systemd watchdog/重启验收。
+源码提交 `6566f64` 的 [Linux CI 39778449263](https://github.com/chasemoonn/noi-linux-contest-system-public/actions/runs/39778449263)
+已实际完成通过，下载的测试日志确认新增36项全部通过、无跳过。10道源码门禁的证据与日志
+再次独立校验通过。全套Python1020项含4项既有跳过（Poppler、Windows junction和两项安装信任场景），
+不能写成全套1020项均已通过，也不能据此替代现场 systemd 验收。
 
 技术依据：[APT 锁实现](https://github.com/Debian/apt/blob/main/apt-pkg/contrib/fileutl.cc)、
 [Linux 记录锁语义](https://man7.org/linux/man-pages/man2/fcntl_locking.2.html)、

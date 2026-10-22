@@ -12,7 +12,11 @@
 以及控制器备赛、公开入口持续对账和云关机前的活进程检查。原更新配置及 enabled/masked 状态不改，
 不永久停安全更新，不动普通 OJ，保护默认关闭，不自动部署、开机或续租。
 Windows 的36项新增检查中27项通过、9项Linux专用检查明确跳过；既有流程64项、配置24项通过。
-Linux检查随 GitHub CI 执行，实际 CI 结果以对应提交为准。
+源码提交 `6566f6454d7ac30397f502f9e467a2763c6509ba` 已同步 GitHub；
+[CI 39778449263](https://github.com/chasemoonn/noi-linux-contest-system-public/actions/runs/39778449263)
+已完成通过。下载日志确认新增36项全部执行通过、无跳过；全套Python运行1020项、4项既有跳过，
+不是1020项全部通过。10道源码门禁及证据独立校验通过，证据SHA256为
+`7a37df6f7611d1d77ff820f76794ac3363dc4deb197a29383d2f709e6f20957e`。
 详见 [维护门槛与待验项](OS_MAINTENANCE_GATE.md) 及 [候选操作说明](../deploy/maintenance/README.md)。
 **本次只是源码候选及本地验证，不代表线上维护中断风险已经修复。** 还需独立审查、
 隔离 Jammy/systemd 实测，再在新批准窗口部署和完成全新容量测试；上一失败结果和真实部署版本保持不变。
