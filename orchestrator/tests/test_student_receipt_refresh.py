@@ -1,5 +1,6 @@
 """Receipt refresh must stay private and never discard a selected code file."""
 import json
+from html.parser import HTMLParser
 from pathlib import Path
 import shutil
 import subprocess
@@ -8,6 +9,32 @@ from unittest import mock
 
 from starlette.requests import Request
 from tests.test_workflow_ux import main, request
+
+
+class ReceiptTableParser(HTMLParser):
+    """Inspect the rendered wrapper without starting a service or browser."""
+    def __init__(self):
+        super().__init__()
+        self.divs = []
+        self.regions = []
+        self.tables = []
+        self.actions = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'div':
+            self.divs.append(attrs)
+            if attrs.get('class') == 'answer-table-scroll':
+                self.regions.append(attrs)
+        inside = any(a.get('class') == 'answer-table-scroll' for a in self.divs)
+        if tag == 'table' and attrs.get('class') == 'answer-table':
+            self.tables.append((inside, attrs))
+        if tag == 'a' and 'data-submit-action' in attrs:
+            self.actions.append((inside, attrs))
+
+    def handle_endtag(self, tag):
+        if tag == 'div':
+            self.divs.pop()
 
 
 class StudentReceiptRefreshTests(unittest.TestCase):
@@ -45,6 +72,42 @@ class StudentReceiptRefreshTests(unittest.TestCase):
                                          client_nonce='a'*32, now='12:00:00')
         self.assertNotIn('data-receipt-revision=', page)
         self.assertIn('type="file"', page)
+
+    def test_receipt_table_scroll_region_preserves_revision_and_all_actions(self):
+        for opened in (True, False):
+            with self.subTest(opened=opened):
+                seat, contest, _, latest = self.context()
+                page = main.WEB_SUBMIT_PAGE.render(
+                    seat=seat, contest=contest, problems=['apple', 'banana'],
+                    latest=latest, directory_receipts={}, opened=opened,
+                    now='12:00:00', receipt_revision='a' * 64,
+                )
+                parser = ReceiptTableParser()
+                parser.feed(page)
+                self.assertEqual(len(parser.regions), 1)
+                self.assertEqual(parser.regions[0]['role'], 'region')
+                self.assertEqual(parser.regions[0]['tabindex'], '0')
+                self.assertIn('横向滚动', parser.regions[0]['aria-label'])
+                self.assertEqual(len(parser.tables), 1)
+                inside, table = parser.tables[0]
+                self.assertTrue(inside)
+                self.assertEqual(table['data-receipt-revision'], 'a' * 64)
+                self.assertEqual(len(parser.actions), 2)
+                for (inside, action), problem in zip(parser.actions, ['apple', 'banana']):
+                    self.assertTrue(inside)
+                    self.assertEqual(action['href'], '/submit/test-token/edit/' + problem)
+                    self.assertEqual('btn-disabled' in action['class'], not opened)
+                self.assertEqual(parser.divs, [])
+
+    def test_narrow_receipt_table_has_local_horizontal_scrolling_and_hint(self):
+        seat, contest, problems, latest = self.context()
+        page = main.WEB_SUBMIT_PAGE.render(
+            seat=seat, contest=contest, problems=problems, latest=latest,
+            directory_receipts={}, opened=False, now='12:00:00',
+        )
+        self.assertIn('.answer-table-scroll{max-width:100%;overflow-x:auto}', page)
+        self.assertIn('.answer-table{min-width:720px}', page)
+        self.assertIn('窄屏可左右滑动上方表格，查看送评状态与操作。', page)
 
     def test_ambiguous_receipt_explains_that_it_will_not_be_resent(self):
         submission = {'created_at':1000, 'size':20, 'sha256':'a'*64,
