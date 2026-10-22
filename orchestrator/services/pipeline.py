@@ -31,6 +31,7 @@ from .gateway_tls import (
 )
 from .hydro_submit import HydroSubmitter
 from .materials import approved_material_paths, sha256_file
+from .maintenance import require_protection, settings as maintenance_settings
 from .remote import Remote
 from .seat_pool import SeatPoolState, TeacherApprovalRequiredError, desired_capacity
 from .static_check import check_answer_tree, check_code
@@ -562,6 +563,7 @@ class Pipeline:
         return str(ip)
 
     def _ensure_desktop_access(self, contest: dict) -> dict:
+        self._check_maintenance(contest=contest)
         if not self._direct_access_enabled():
             return {"enabled": False, "open": False, "healthy": True}
         with self._desktop_access_guard:
@@ -654,6 +656,11 @@ class Pipeline:
                 return status
             try:
                 self._validate_ready_gateway()
+                try:
+                    self._check_maintenance(contest=desired)
+                except Exception:
+                    self.store.set_state(str(desired["tid"]), "error", "系统维护保护失效；桌面入口收回，需人工处理")
+                    raise
                 status = self.cvm.ensure_desktop_access(
                     tid=str(desired["tid"]),
                     end_at_ms=int(desired["end_at_ms"]),
@@ -703,6 +710,7 @@ class Pipeline:
                 )
                 return status
             self._validate_ready_gateway()
+            self._check_maintenance(contest=desired)
             status = self.cvm.desktop_access_status(
                 tid=str(desired["tid"]),
                 end_at_ms=int(desired["end_at_ms"]),
@@ -1983,6 +1991,8 @@ class Pipeline:
         state = state.upper()
         if state == "RUNNING" and ip:
             return ip
+        if maintenance_settings(self.cfg.get("contest_server", {})) is not None:
+            raise RuntimeError("启用维护保护后须由管理员在批准窗口完成开机维护并建立保护；拒绝自动开机")
         if state == "STOPPING":
             deadline = time.monotonic() + 300
             while time.monotonic() < deadline:
@@ -1999,17 +2009,38 @@ class Pipeline:
             raise RuntimeError(f"云服务器状态不可启动: {state}")
         return self.cvm.wait_running()
 
+    def _check_maintenance(self, *, contest=None, remote=None, ip=None):
+        server = self.cfg.get("contest_server", {})
+        if maintenance_settings(server) is None:
+            return None
+        if remote is None:
+            if ip is None:
+                state, ip = self.cvm.status()
+                if str(state).upper() != "RUNNING" or not ip:
+                    raise RuntimeError("maintenance gate requires a reachable running contest host")
+            remote = self._remote(ip)
+        return require_protection(
+            remote, server, tid=str(contest["tid"]) if contest else None,
+            end_at_ms=int(contest.get("end_at_ms") or 0) if contest else None,
+            grace_minutes=int(self.cfg.get("orchestrator", {}).get("shutdown_grace_minutes", 30)),
+        )
+
     def _stop_server_best_effort(self) -> None:
         """Request stop and prove the asynchronous operation reached STOPPED."""
         deadline = time.monotonic() + 120
         stop_requested = False
         last_state = "UNKNOWN"
         while time.monotonic() < deadline:
-            state, _ = self.cvm.status()
+            state, ip = self.cvm.status()
             state = state.upper()
             last_state = state
             if state == "RUNNING":
                 if not stop_requested:
+                    # Do not release maintenance exclusion before cloud stop.
+                    # The guard remains host-local through the whole request.
+                    # A missing/expired lease refuses shutdown rather than
+                    # cutting power in the middle of an OS package transaction.
+                    self._check_maintenance(ip=ip)
                     self.cvm.stop()
                     stop_requested = True
                     # Confirm the transition immediately once before backing
@@ -2427,7 +2458,9 @@ class Pipeline:
             if not remote.wait_ssh():
                 raise RuntimeError("SSH 等待超时")
 
-            # This is intentionally the first remote prerequisite after SSH:
+            self._check_maintenance(contest=contest, remote=remote)
+
+            # After the optional maintenance admission gate:
             # no pool state, slot directory, network, or container is created
             # until the mutable image tag resolves to the required contract.
             expected_image_id = self._inspect_desktop_image_contract(

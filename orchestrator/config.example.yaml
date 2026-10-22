@@ -35,6 +35,13 @@ contest_server:
   strict_host_key: true
   # StopCharging 重启可能更换公网 IP；固定实例主机密钥指纹可安全接受新 IP。
   host_key_sha256: "${CONTEST_SSH_HOST_KEY_SHA256:-}"
+  # Candidate only. Requires separately reviewed installation on the dedicated
+  # contest host and a fresh approved, boot-bound <=4h maintenance lease.
+  # Does not install the agent, run updates, or change existing deployments.
+  # See docs/OS_MAINTENANCE_GATE.md. Missing lease refuses prepare/VM shutdown.
+  maintenance_guard:
+    enabled: false
+    machine_id: "${CONTEST_MAINTENANCE_MACHINE_ID:-}"
   seats_root: "/data/seats"
   gateway_listen: 80
   # 专用比赛机保持 0.0.0.0；仅多网卡隔离验收环境可固定到比赛网卡 IPv4。

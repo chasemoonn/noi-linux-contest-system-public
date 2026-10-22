@@ -1,0 +1,26 @@
+[Unit]
+Description=Bounded maintenance exclusion for a dedicated NOI contest VM
+After=local-fs.target
+Before=nginx.service apt-daily.service apt-daily-upgrade.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=root
+UMask=0077
+RuntimeDirectory=noi-maintenance
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/python3 /opt/noi-maintenance/maintenance_guard.py run
+ExecStopPost=/usr/bin/python3 /opt/noi-maintenance/maintenance_guard.py close-gateway
+Restart=no
+RuntimeMaxSec=4h
+WatchdogSec=15s
+WatchdogSignal=SIGTERM
+TimeoutStartSec=150s
+TimeoutAbortSec=5s
+TimeoutStopSec=30s
+KillMode=control-group
+NoNewPrivileges=yes
+
+# Intentionally no [Install] section: never enable at boot. Each approved
+# window needs a new manifest pinned to this boot, host, owner and contest.

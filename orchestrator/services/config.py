@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from .gateway_tls import gateway_tls_enabled, gateway_tls_settings
+from .maintenance import settings as maintenance_settings
 
 _ENV = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.:/-]+$")
@@ -71,6 +72,7 @@ def _require(cfg: dict, *path: str) -> Any:
 
 
 def validate_config(cfg: dict) -> None:
+    maintenance_settings(cfg.get("contest_server", {}))
     provider = str(_require(cfg, "cloud", "provider")).lower()
     if provider not in {"aliyun", "tencent"}:
         raise ValueError("cloud.provider 只支持 aliyun 或 tencent")
@@ -87,6 +89,9 @@ def validate_config(cfg: dict) -> None:
     if not isinstance(desktop_access, dict):
         raise ValueError(f"cloud.{provider}.desktop_access 必须是映射")
     desktop_access_enabled = desktop_access.get("enabled", False)
+    if maintenance_settings(cfg.get("contest_server", {})) is not None:
+        if desktop_access_enabled is not True or not gateway_tls_enabled(cfg["contest_server"]):
+            raise ValueError("maintenance_guard candidate requires native TLS and managed desktop access")
     if not isinstance(desktop_access_enabled, bool):
         raise ValueError(f"cloud.{provider}.desktop_access.enabled 必须是布尔值")
     if desktop_access_enabled and provider != "aliyun":
