@@ -1,0 +1,40 @@
+name: Maintenance guard systemd fixtures
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'deploy/maintenance/**'
+      - 'scripts/*maintenance_systemd_ci*'
+      - '.github/workflows/maintenance-systemd.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  jammy-systemd:
+    # Public standard runner: disposable VM, never self-hosted or production.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run real systemd with isolated services and package locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            ImageOS="$ImageOS" GITHUB_SHA="$GITHUB_SHA" \
+            /usr/bin/python3 scripts/run_maintenance_systemd_ci.py \
+            --disposable-github-runner --output-directory "$RUNNER_TEMP/maintenance-systemd-evidence"
+      - name: Independently verify fixture evidence
+        run: /usr/bin/python3 scripts/verify_maintenance_systemd_ci.py "$RUNNER_TEMP/maintenance-systemd-evidence" --expected-revision "$GITHUB_SHA"
+      - name: Preserve evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maintenance-systemd-${{ github.sha }}
+          path: ${{ runner.temp }}/maintenance-systemd-evidence
+          if-no-files-found: error
+          retention-days: 30
