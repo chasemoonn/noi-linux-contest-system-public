@@ -5,6 +5,25 @@
 **定位：功能闭环已有实机证据，但本次发现赛中系统维护中断风险；下一场真实比赛前须先完成有界维护保护，尚不能正式交付或承诺15+2容量。**
 未将 production_qualified 改为 true；不能用测试次数替代使用证据。
 
+### 10 月 23 日：真实 Jammy/systemd 隔离集成通过，线上仍未启用
+
+新增测试及校验器已先同步 GitHub，源码提交 `1dd9fc3686291e8e6aac28cf3685f686bc4eb48d`。
+[systemd集成CI39890570699](https://github.com/chasemoonn/noi-linux-contest-system-public/actions/runs/39890570699)
+在一次性 Ubuntu22.04 runner 上首次运行通过，使用真实 systemd249、APT2.4.14 和原 guard 控制逻辑。
+六条路径全部通过：SIGTERM、systemctl stop、联合停止、SIGKILL、SIGSTOP watchdog、实际许可到期。
+真实watchdog约15.3秒触发并收尾；到期场景总运行145.727秒。正常路径先关测试网关再解锁；
+SIGKILL明确是内核先解锁、ExecStopPost随后关闭网关，不能声称原子化。原始journal及证据下载后
+再次独立校验通过，SHA256为`6d263178694f66013fd3edb68f21604b096753a05756d5218f07943d396c02c0`。
+
+网关、Docker及更新单元为具名测试替身，四锁是临时文件；没有运行真实Nginx升级或更改更新策略。
+宿主APT配置和timer策略前后不变，原timer均disabled；没有已启用timer/补执行/主机重启证据。
+[全套源码CI39890570821](https://github.com/chasemoonn/noi-linux-contest-system-public/actions/runs/39890570821)
+和10道证据门禁通过，Python1026项含4项既有跳过；维护相关42项在Linux全部通过。
+这补齐了真实监督与退出顺序的隔离验证，**不等于生产升级风险已经修复，也不等于容量通过**。
+仍需真实包更新/补执行/重启验证与独立审查，再在新批准窗口部署和测试。没有新开云机、比赛或生产探针。
+详见[维护门槛与实测边界](OS_MAINTENANCE_GATE.md)。下方10月22日“systemd待验证”保留为当时状态，
+本节仅覆盖已经实测的六条退出路径，其余验收保持未完成。
+
 ### 10 月 22 日：获准实现维护保护，源码候选完成
 
 负责人已授权实现并验证仅针对比赛云机的有界系统维护保护；没有批准新的整场维护测试窗口。
